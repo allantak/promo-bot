@@ -1,0 +1,4 @@
+telethon
+cachetools
+requests
+python-dotenv
