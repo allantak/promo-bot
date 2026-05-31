@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, unquote
+from urllib.parse import parse_qsl, urlparse, parse_qs, urlencode, urlunparse, unquote
 import tempfile
 
 from dotenv import load_dotenv
@@ -27,6 +27,12 @@ AWIN_PUBLISHER_ID = os.getenv('AWIN_PUBLISHER_ID')
 AWIN_ACCESS_TOKEN = os.getenv('AWIN_ACCESS_TOKEN')
 AWIN_KABUM_ADVERTISER_ID = int(os.getenv('AWIN_KABUM_ADVERTISER_ID'))
 ALIEXPRESS_TRACKING_ID = 'default'
+
+MELI_COOKIE = os.getenv('MELI_COOKIE')
+MELI_X_CSRF_TOKEN = os.getenv('MELI_X_CSRF_TOKEN')
+MELI_AFFILIATE_TAG = os.getenv('MELI_AFFILIATE_TAG') # O "tag" do JSON (ex: ta20250609093813)
+
+ADMIN_CHAT_ID = os.getenv('TELEGRAM_ADMIN_ID')
 
 
 CANAIS_ALVO = [
@@ -50,7 +56,7 @@ PARAMS_AFILIADO_TERCEIRO = {
 
 PALAVRAS_FORA_NICHO = {
     # Moda e vestuário
-    'camisa', 'camiseta', 'blusa', 'vestido', 'calça', 'calca',
+    'camisa', 'camiseta', 'blusa', 'vestido', 'calça', 'calca','condicionado','ar-condicionado','electrolux', 'tv',
     'shorts', 'cueca', 'calcinha', 'sutiã', 'sutia', 'meia',
     'tênis', 'tenis', 'sapato', 'bota', 'sandália', 'sandalia',
     'chinelo', 'tamanco', 'salto', 'mocassim',
@@ -137,7 +143,186 @@ PALAVRAS_FORA_NICHO = {
     'regador', 'pá de jardim', 'tesoura de poda','smartphone','celular', 'mochila'
 }
 
+def extrair_buy_box_winner(url: str) -> str:
+    """
+    Extrai o ID do anúncio real. Prioriza o ID que está dentro dos 
+    parâmetros pdp_filters ou wid (comum em links de catálogo /p/).
+    """
+    url_corrigida = url.replace('&amp;', '&')
+    parsed = urlparse(url_corrigida)
+    query_params = dict(parse_qsl(parsed.query))
+    
+    # 1. Tenta achar o ID do vendedor específico no wid
+    if 'wid' in query_params:
+        match = re.search(r'MLB-?\d+', query_params['wid'])
+        if match: return match.group(0).replace('-', '')
+        
+    # 2. Tenta achar nos filtros de catálogo
+    if 'pdp_filters' in query_params:
+        # Tira o %3A (dois pontos codificados) para ler limpo
+        filtro_descodificado = unquote(query_params['pdp_filters'])
+        match = re.search(r'MLB-?\d+', filtro_descodificado)
+        if match: return match.group(0).replace('-', '')
+        
+    # 3. Fallback: Se não tem parâmetro, extrai do próprio caminho da URL
+    match = re.search(r'MLB-?\d+', parsed.path)
+    if match:
+        return match.group(0).replace('-', '')
+        
+    return ""
 
+def limpar_url_produto(url_suja: str) -> str:
+    """
+    Remove o rastreamento concorrente (matt_, tracking_id), 
+    mas preserva os filtros essenciais para páginas de catálogo.
+    """
+    # Trata caso a URL venha com &amp; do HTML ao invés de &
+    url_suja = url_suja.replace('&amp;', '&')
+    
+    parsed = urlparse(url_suja)
+    query_params = parse_qsl(parsed.query)
+    
+    params_essenciais = []
+    for key, value in query_params:
+        # Só mantemos parâmetros que importam para o produto abrir certo
+        if key in ['pdp_filters', 'wid']:
+            params_essenciais.append((key, value))
+            
+    nova_query = urlencode(params_essenciais)
+    
+    # Remonta a URL
+    url_limpa = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    if nova_query:
+        url_limpa += f"?{nova_query}"
+        
+    return url_limpa
+
+def extrair_id_mlb(url: str) -> str:
+    """Extrai o código do produto (ex: MLB4677093913) de dentro da URL."""
+    match = re.search(r'MLB-?\d+', url.replace('-', '')) # Lida com MLB123 e MLB-123
+    return match.group(0) if match else ""
+
+def desempacotar_link(url_curta: str) -> str:
+    """
+    Resolve links meli.la e extrai o link final do produto.
+    Se cair em uma página /social/, raspa o HTML para achar o produto.
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        # Faz a requisição seguindo todos os redirecionamentos (resolve o meli.la)
+        resposta = requests.get(url_curta, headers=headers, allow_redirects=True, timeout=10)
+        url_atual = resposta.url
+        
+        # Limpa barras escapadas caso existam no JSON da página
+        html_limpo = resposta.text.replace('\\/', '/')
+
+        # Verifica se já chegamos no produto diretamente
+        if extrair_id_mlb(url_atual) and "/social/" not in url_atual:
+            return url_atual
+            
+        # Se a URL final for uma página de vitrine/social
+        if "/social/" in url_atual:
+            # Regex para pescar qualquer link de produto do Mercado Livre no HTML
+            padrao = r'https://[^\s"\'<>]*mercadolivre\.com\.br/[^\s"\'<>]*MLB-?\d+[^\s"\'<>]*'
+            matches = re.findall(padrao, html_limpo)
+            
+            if matches:
+                # Retorna o primeiro link de produto encontrado na página social
+                link_produto = matches[0]
+                print(f"[🔎] Produto extraído da página social: {link_produto}")
+                link_produto_limpo = limpar_url_produto(link_produto)  # Limpa o link antes de retornar
+                print(f"[🔎] Link do produto limpo: {link_produto_limpo}")
+                return link_produto_limpo
+            else:
+                print(f"[X] Nenhum produto encontrado dentro do link social: {url_atual}")
+                return None
+                
+        return url_atual
+
+    except Exception as e:
+        print(f"[X] Erro ao desempacotar o link {url_curta}: {e}")
+        return None
+
+def enviar_alerta_expiracao(status_code: int):
+    # ... (Mantenha a função de alerta idêntica ao código anterior)
+    pass
+
+def converter_link_meli(url_original: str) -> str:
+    """Converte o link após garantir que temos a URL final do produto, sem rastros de concorrentes."""
+    if not MELI_COOKIE or not MELI_X_CSRF_TOKEN or not MELI_AFFILIATE_TAG:
+        print("[!] Credenciais incompletas no .env.")
+        return None
+
+    print(f"[⏳] Processando link recebido: {url_original}")
+    
+    # 1. DESEMPACOTA O LINK PRIMEIRO
+    url_real_produto = desempacotar_link(url_original)
+    
+    if not url_real_produto:
+        print("[!] Não foi possível chegar a um link de produto válido. Ignorando.")
+        return None
+
+    # --- NOVO PASSO: LIMPEZA ---
+    # 1.5 LIMPA A URL (Remove rastreio do concorrente, mas mantém filtros de catálogo pdp_filters)
+    url_limpa = limpar_url_produto(url_real_produto)
+
+    # 2. EXTRAI O MLB (Usando a nova função inteligente na url limpa)
+    id_produto = extrair_buy_box_winner(url_limpa)
+    
+    if not id_produto:
+        print(f"[!] ID do produto (Buy Box) não encontrado na URL resolvida: {url_limpa}")
+        return None
+        
+    print(f"[🔎] ID Buy Box Winner identificado: {id_produto}")
+
+    # 3. SEGUE COM A CONVERSÃO NORMAL
+    url_api = "https://www.mercadolivre.com.br/affiliate-program/api/v2/stripe/user/links"
+    
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json",
+        "cookie": MELI_COOKIE,
+        "x-csrf-token": MELI_X_CSRF_TOKEN,
+        "origin": "https://www.mercadolivre.com.br",
+        "referer": url_limpa, # <-- IMPORTANTE: Atualizado para a URL limpa
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    payload = {
+        "url": url_limpa, # <-- IMPORTANTE: O Mercado Livre agora recebe a URL virgem
+        "tag": MELI_AFFILIATE_TAG,
+        "buy_box_winner": id_produto # A nova função já entrega sem o traço '-'
+    }
+
+    try:
+        resposta = requests.post(url_api, headers=headers, json=payload, timeout=8)
+        
+        if resposta.status_code == 200:
+            dados = resposta.json()
+            link_afiliado = dados.get("short_url") or dados.get("link") or dados.get("url")
+            
+            if link_afiliado:
+                print(f"[✓] Sucesso! Convertido para: {link_afiliado}")
+                return link_afiliado
+            return None
+
+        elif resposta.status_code in [401, 403]:
+            print(f"[⚠️] Erro {resposta.status_code}: Sessão expirada ou CSRF Token inválido!")
+            # enviar_alerta_expiracao(resposta.status_code) # Descomente se for usar
+            return None
+            
+        else:
+            # Adicionado resposta.text no print de erro para facilitar debugar se o ML reclamar de algo
+            print(f"[X] Erro API: {resposta.status_code} - {resposta.text}") 
+            return None
+            
+    except Exception as e:
+        print(f"[X] Erro no requests: {e}")
+        return None
+    
 def e_do_nicho(texto: str) -> bool:
     """
     Retorna False se encontrar qualquer palavra fora do nicho.
@@ -415,6 +600,8 @@ def detectar_plataforma(link: str) -> str:
         return 'aliexpress'
     if any(d in link for d in ['amazon.com.br', 'amzn.to', 'a.co']):
         return 'amazon'
+    if any(d in link for d in ['mercadolivre.com.br', 'meli.bz','meli.la']):
+        return 'mercadolivre'
     return 'desconhecido'
 
 def converter_link(link: str) -> str:
@@ -427,6 +614,8 @@ def converter_link(link: str) -> str:
         return converter_link_amazon(link)
     elif plataforma == 'kabum':
         return converter_link_kabum(link)
+    elif plataforma == 'mercadolivre':
+        return converter_link_meli(link)
     else:
         print(f"[!] Plataforma desconhecida: {link}")
         return
