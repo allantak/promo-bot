@@ -47,6 +47,37 @@ cache_links = TTLCache(maxsize=10, ttl=300)
 client = TelegramClient('minha_sessao', API_ID, API_HASH)
 padrao_link = re.compile(r'https?://\S+')
 
+# ============================================================
+# RODAPÉ / ASSINATURA DE CANAL — linhas que devem ser removidas
+# ============================================================
+# São linhas de divulgação cruzada que os canais de origem colam
+# no final da mensagem (ex: "🐈 t.me/OQMCUPONS",
+# "🔔 Receba notificações personalizadas com @OQMALERTABOT").
+# Usamos padrões (não texto fixo) para continuar funcionando mesmo
+# que o nome do canal/bot mude no futuro.
+PADROES_RODAPE = [
+    re.compile(r'🐈'),                       # marcador específico desse canal
+    re.compile(r't\.me/\S+', re.IGNORECASE), # menção solta a outro canal (sem ser link de produto)
+    re.compile(r'receba notifica', re.IGNORECASE),
+    re.compile(r'@\w*ALERTABOT', re.IGNORECASE),
+]
+
+def remover_rodape(texto: str) -> str:
+    """
+    Remove linhas de rodapé/assinatura indesejadas (divulgação de outro
+    canal, bot de notificações, etc.) antes de qualquer outro processamento.
+    """
+    linhas = texto.split('\n')
+    linhas_limpas = [
+        linha for linha in linhas
+        if not any(padrao.search(linha) for padrao in PADROES_RODAPE)
+    ]
+
+    texto_limpo = '\n'.join(linhas_limpas)
+    # Colapsa 3+ quebras de linha seguidas em apenas uma linha em branco
+    texto_limpo = re.sub(r'\n{3,}', '\n\n', texto_limpo)
+    return texto_limpo.strip()
+
 # Parâmetros de rastreio de terceiros que devem ser removidos
 PARAMS_AFILIADO_TERCEIRO = {
     'aw_affid', 'awc', 'sv1', 'sv_campaign_id',
@@ -345,7 +376,7 @@ def limpar_url_kabum(url: str) -> str:
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
 
-        # Remove todos os parâmetros contaminados
+        # Remove parâmetros contaminados
         params_limpos = {
             k: v for k, v in params.items()
             if k not in PARAMS_AFILIADO_TERCEIRO
@@ -775,6 +806,11 @@ def substituir_links_no_texto(texto: str) -> tuple[str, bool]:
 async def escutar_promocoes(event):
     try:
         texto_da_mensagem = event.raw_text
+
+        # Remove rodapé/assinatura indesejada (ex: divulgação de outro canal)
+        # antes de qualquer outro processamento.
+        texto_da_mensagem = remover_rodape(texto_da_mensagem)
+
         chat = await event.get_chat()
         nome_do_canal_origem = chat.title if hasattr(chat, 'title') else "Canal Desconhecido"
 
