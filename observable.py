@@ -856,25 +856,25 @@ def enviar_para_meu_bot(texto):
         print(f"Erro de conexão: {e}")
 
 
-def main():
-    print("=== Teste de Conversão de Links ===\n")
+# def main():
+#     print("=== Teste de Conversão de Links ===\n")
 
-    links_teste = [
-       "https://meli.la/2tV2CE5"
-       ]
+#     links_teste = [
+#        "https://meli.la/2tV2CE5"
+#        ]
     
-    for link in links_teste:
-        plataforma = detectar_plataforma(link)
-        link_convertido = converter_link(link)
+#     for link in links_teste:
+#         plataforma = detectar_plataforma(link)
+#         link_convertido = converter_link(link)
 
-        print(f"Plataforma : {plataforma}")
-        print(f"Original   : {link}")
-        print(f"Convertido : {link_convertido}")
-        print("-" * 60)
+#         print(f"Plataforma : {plataforma}")
+#         print(f"Original   : {link}")
+#         print(f"Convertido : {link_convertido}")
+#         print("-" * 60)
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
 
-# print("Iniciando o observador de múltiplos canais...")
-# with client:
-#    client.run_until_disconnected()
+print("Iniciando o observador de múltiplos canais...")
+with client:
+   client.run_until_disconnected()
