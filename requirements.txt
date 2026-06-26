@@ -2,3 +2,4 @@ telethon
 cachetools
 requests
 python-dotenv
+pytest

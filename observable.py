@@ -7,6 +7,7 @@ import hmac
 import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qsl, urlparse, parse_qs, urlencode, urlunparse, unquote
+from collections import Counter
 import tempfile
 
 from dotenv import load_dotenv
@@ -30,7 +31,7 @@ ALIEXPRESS_TRACKING_ID = 'default'
 
 MELI_COOKIE = os.getenv('MELI_COOKIE')
 MELI_X_CSRF_TOKEN = os.getenv('MELI_X_CSRF_TOKEN')
-MELI_AFFILIATE_TAG = os.getenv('MELI_AFFILIATE_TAG') # O "tag" do JSON (ex: ta20250609093813)
+MELI_AFFILIATE_TAG = os.getenv('MELI_AFFILIATE_TAG')
 
 ADMIN_CHAT_ID = os.getenv('TELEGRAM_ADMIN_ID')
 
@@ -50,23 +51,15 @@ padrao_link = re.compile(r'https?://\S+')
 # ============================================================
 # RODAPÉ / ASSINATURA DE CANAL — linhas que devem ser removidas
 # ============================================================
-# São linhas de divulgação cruzada que os canais de origem colam
-# no final da mensagem (ex: "🐈 t.me/OQMCUPONS",
-# "🔔 Receba notificações personalizadas com @OQMALERTABOT").
-# Usamos padrões (não texto fixo) para continuar funcionando mesmo
-# que o nome do canal/bot mude no futuro.
 PADROES_RODAPE = [
     re.compile(r'🐈'),                       # marcador específico desse canal
-    re.compile(r't\.me/\S+', re.IGNORECASE), # menção solta a outro canal (sem ser link de produto)
+    re.compile(r't\.me/\S+', re.IGNORECASE),  # menção solta a outro canal (sem ser link de produto)
     re.compile(r'receba notifica', re.IGNORECASE),
     re.compile(r'@\w*ALERTABOT', re.IGNORECASE),
 ]
 
+
 def remover_rodape(texto: str) -> str:
-    """
-    Remove linhas de rodapé/assinatura indesejadas (divulgação de outro
-    canal, bot de notificações, etc.) antes de qualquer outro processamento.
-    """
     linhas = texto.split('\n')
     linhas_limpas = [
         linha for linha in linhas
@@ -74,9 +67,9 @@ def remover_rodape(texto: str) -> str:
     ]
 
     texto_limpo = '\n'.join(linhas_limpas)
-    # Colapsa 3+ quebras de linha seguidas em apenas uma linha em branco
     texto_limpo = re.sub(r'\n{3,}', '\n\n', texto_limpo)
     return texto_limpo.strip()
+
 
 # Parâmetros de rastreio de terceiros que devem ser removidos
 PARAMS_AFILIADO_TERCEIRO = {
@@ -87,7 +80,7 @@ PARAMS_AFILIADO_TERCEIRO = {
 
 PALAVRAS_FORA_NICHO = {
     # Moda e vestuário
-    'camisa', 'camiseta', 'blusa', 'vestido', 'calça', 'calca','condicionado','ar-condicionado','electrolux', 'tv',
+    'camisa', 'camiseta', 'blusa', 'vestido', 'calça', 'calca', 'condicionado', 'ar-condicionado', 'electrolux', 'tv',
     'shorts', 'cueca', 'calcinha', 'sutiã', 'sutia', 'meia',
     'tênis', 'tenis', 'sapato', 'bota', 'sandália', 'sandalia',
     'chinelo', 'tamanco', 'salto', 'mocassim',
@@ -96,7 +89,7 @@ PALAVRAS_FORA_NICHO = {
     'pulseira', 'colar', 'brinco', 'anel', 'cordão',
     'perfume', 'colônia', 'roupa', 'jaqueta', 'casaco', 'moletom',
     'pijama', 'bermuda', 'chapéu', 'chapeu', 'boné', 'bone',
-    'gravata', 'cinto', 'lenço','smartwatch',
+    'gravata', 'cinto', 'lenço', 'smartwatch',
 
     # Casa, cozinha e utilidades domésticas
     'panela', 'frigideira', 'wok', 'forma', 'assadeira',
@@ -109,13 +102,13 @@ PALAVRAS_FORA_NICHO = {
     'tapete', 'cortina', 'persiana', 'lustre', 'abajur',
     'travesseiro', 'cobertor', 'edredom', 'lençol', 'toalha',
     'colchão', 'cama', 'sofá', 'sofa', 'poltrona', 'mesa de jantar',
-     'estante', 'guarda roupa', 'armário',
+    'estante', 'guarda roupa', 'armário',
     'porta retrato', 'vaso', 'quadro', 'espelho',
     'garrafa térmica', 'copo', 'prato', 'tigela', 'talheres',
-    'organizador', 'cabide', 'porta sabão','iphone', 'ipad', 'MacBook', 'Apple Watch', 'AirPods','impressora','samsung galaxy','power bank','carregador portátil','ar condicionado','ketchup','mostarda','maionese','refrigerante','suco','água mineral','agua mineral','cerveja artesanal','vinho tinto','whisky escocês','suplemento alimentar','barra de proteína','ração para cachorro','ração para gato','coleira para cachorro','cama de cachorro','arranhador para gato','aquário para peixes','gaiola para pássaros','bicicleta de estrada','bike de montanha','esteira ergométrica','elíptico doméstico','halteres ajustáveis','anilha de peso olímpica','kettlebell de ferro fundido','barra de musculação olímpica','tapete de yoga antiderrapante','aula de yoga online','natação em piscina coberta','chuteira de futebol society','bola de futebol oficial da FIFA',
+    'organizador', 'cabide', 'porta sabão', 'iphone', 'ipad', 'MacBook', 'Apple Watch', 'AirPods', 'impressora', 'samsung galaxy', 'power bank', 'carregador portátil', 'ar condicionado', 'ketchup', 'mostarda', 'maionese', 'refrigerante', 'suco', 'água mineral', 'agua mineral', 'cerveja artesanal', 'vinho tinto', 'whisky escocês', 'suplemento alimentar', 'barra de proteína', 'ração para cachorro', 'ração para gato', 'coleira para cachorro', 'cama de cachorro', 'arranhador para gato', 'aquário para peixes', 'gaiola para pássaros', 'bicicleta de estrada', 'bike de montanha', 'esteira ergométrica', 'elíptico doméstico', 'halteres ajustáveis', 'anilha de peso olímpica', 'kettlebell de ferro fundido', 'barra de musculação olímpica', 'tapete de yoga antiderrapante', 'aula de yoga online', 'natação em piscina coberta', 'chuteira de futebol society', 'bola de futebol oficial da FIFA',
     'caixa de som',
     # Ferramentas e construção
-    'furadeira', 'parafusadeira', 'martelete', 'esmerilhadeira','cooktop',
+    'furadeira', 'parafusadeira', 'martelete', 'esmerilhadeira', 'cooktop',
     'serra', 'serrote', 'martelo', 'chave de fenda', 'alicate',
     'trena', 'nível', 'fita isolante', 'cimento', 'argamassa',
     'tinta', 'pincel', 'rolo de pintura', 'lixa', 'mangueira', 'jogo',
@@ -128,7 +121,7 @@ PALAVRAS_FORA_NICHO = {
     'secador de cabelo', 'chapinha', 'modelador', 'prancha',
     'escova de dente', 'fio dental', 'enxaguante',
     'absorvente', 'fraldas adulto',
-    'suplemento', 'whey', 'creatina', 'proteína', 'proteina','copa','fifa','powerbank'
+    'suplemento', 'whey', 'creatina', 'proteína', 'proteina', 'copa', 'fifa', 'powerbank'
     'vitamina', 'remédio', 'remedio', 'medicamento',
     'termômetro', 'termometro', 'oxímetro', 'oximetro',
     'aparelho de pressão', 'balança',
@@ -171,194 +164,196 @@ PALAVRAS_FORA_NICHO = {
 
     # Jardinagem
     'vaso de planta', 'terra para planta', 'adubo', 'fertilizante',
-    'regador', 'pá de jardim', 'tesoura de poda','smartphone','celular', 'mochila'
+    'regador', 'pá de jardim', 'tesoura de poda', 'smartphone', 'celular', 'mochila'
 }
 
+
 def extrair_buy_box_winner(url: str) -> str:
-    """
-    Extrai o ID do anúncio real. Prioriza o ID que está dentro dos 
-    parâmetros pdp_filters ou wid (comum em links de catálogo /p/).
-    """
     url_corrigida = url.replace('&amp;', '&')
     parsed = urlparse(url_corrigida)
-    query_params = dict(parse_qsl(parsed.query))
-    
-    # 1. Tenta achar o ID do vendedor específico no wid
+    # wid pode estar na query OU no fragmento (#...&wid=MLB...)
+    query_params = dict(parse_qsl(parsed.query) + parse_qsl(parsed.fragment))
+
     if 'wid' in query_params:
         match = re.search(r'MLB-?\d+', query_params['wid'])
-        if match: return match.group(0).replace('-', '')
-        
-    # 2. Tenta achar nos filtros de catálogo
+        if match:
+            return match.group(0).replace('-', '')
+
     if 'pdp_filters' in query_params:
-        # Tira o %3A (dois pontos codificados) para ler limpo
         filtro_descodificado = unquote(query_params['pdp_filters'])
         match = re.search(r'MLB-?\d+', filtro_descodificado)
-        if match: return match.group(0).replace('-', '')
-        
-    # 3. Fallback: Se não tem parâmetro, extrai do próprio caminho da URL
+        if match:
+            return match.group(0).replace('-', '')
+
     match = re.search(r'MLB-?\d+', parsed.path)
     if match:
         return match.group(0).replace('-', '')
-        
+
     return ""
 
+
 def limpar_url_produto(url_suja: str) -> str:
-    """
-    Remove o rastreamento concorrente (matt_, tracking_id), 
-    mas preserva os filtros essenciais para páginas de catálogo.
-    """
-    # Trata caso a URL venha com &amp; do HTML ao invés de &
     url_suja = url_suja.replace('&amp;', '&')
-    
+
     parsed = urlparse(url_suja)
-    query_params = parse_qsl(parsed.query)
-    
+    # O ML coloca o wid depois do '#', e o urlparse joga isso em
+    # parsed.fragment, não em parsed.query. Lemos os dois.
+    query_params = parse_qsl(parsed.query) + parse_qsl(parsed.fragment)
+
     params_essenciais = []
     for key, value in query_params:
-        # Só mantemos parâmetros que importam para o produto abrir certo
         if key in ['pdp_filters', 'wid']:
             params_essenciais.append((key, value))
-            
+
     nova_query = urlencode(params_essenciais)
-    
-    # Remonta a URL
+
     url_limpa = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     if nova_query:
         url_limpa += f"?{nova_query}"
-        
+
     return url_limpa
 
+
 def extrair_id_mlb(url: str) -> str:
-    """Extrai o código do produto (ex: MLB4677093913) de dentro da URL."""
-    match = re.search(r'MLB-?\d+', url.replace('-', '')) # Lida com MLB123 e MLB-123
+    match = re.search(r'MLB-?\d+', url.replace('-', ''))
     return match.group(0) if match else ""
 
+
+def _url_limpa_produto(url: str) -> str:
+    """Devolve só esquema + domínio + caminho do produto, sem query/fragmento."""
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}{p.path}"
+
+
+def _mlb_normalizado(url: str) -> str:
+    m = re.search(r'MLB-?\d+', url)
+    return m.group(0).replace('-', '') if m else ""
+
+
 def desempacotar_link(url_curta: str) -> str:
-    """
-    Resolve links meli.la e extrai o link final do produto.
-    Se cair em uma página /social/, raspa o HTML para achar o produto.
-    """
+    """Resolve um link curto/social do Mercado Livre e devolve a URL LIMPA do
+    produto (sem parâmetros). Em páginas de vitrine (/social/...) extrai o
+    produto em DESTAQUE. Retorna None se não houver um produto identificável.
+
+    Obs.: não dependemos mais do `wid`. Testes provaram que ele é irrelevante
+    para o destino — o que importa é apontar para a URL do produto em si."""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        
-        # Faz a requisição seguindo todos os redirecionamentos (resolve o meli.la)
+
         resposta = requests.get(url_curta, headers=headers, allow_redirects=True, timeout=10)
         url_atual = resposta.url
-        
-        # Limpa barras escapadas caso existam no JSON da página
-        html_limpo = resposta.text.replace('\\/', '/')
 
-        # Verifica se já chegamos no produto diretamente
+        # Desescapa barras (\/) e aspas (\") do JSON embutido na página.
+        html_limpo = resposta.text.replace('\\/', '/').replace('\\"', '"').replace('&amp;', '&')
+
+        # Caso 1: o redirect já caiu direto num produto.
         if extrair_id_mlb(url_atual) and "/social/" not in url_atual:
-            return url_atual
-            
-        # Se a URL final for uma página de vitrine/social
+            return _url_limpa_produto(url_atual)
+
+        # Caso 2: caímos numa vitrine /social/ — extrair o produto em destaque.
         if "/social/" in url_atual:
-            # Regex para pescar qualquer link de produto do Mercado Livre no HTML
-            padrao = r'https://[^\s"\'<>]*mercadolivre\.com\.br/[^\s"\'<>]*MLB-?\d+[^\s"\'<>]*'
+            padrao = r'https://[a-z.]*mercadolivre\.com\.br/[^\s"\'<>]*MLB-?\d+[^\s"\'<>]*'
             matches = re.findall(padrao, html_limpo)
-            
-            if matches:
-                # Retorna o primeiro link de produto encontrado na página social
-                link_produto = matches[0]
-                print(f"[🔎] Produto extraído da página social: {link_produto}")
-                link_produto_limpo = limpar_url_produto(link_produto)  # Limpa o link antes de retornar
-                print(f"[🔎] Link do produto limpo: {link_produto_limpo}")
-                return link_produto_limpo
-            else:
+
+            if not matches:
                 print(f"[X] Nenhum produto encontrado dentro do link social: {url_atual}")
                 return None
-                
-        return url_atual
+
+            # 2a) URL marcada explicitamente como card de destaque da vitrine.
+            destaque = next((u for u in matches if 'card-featured' in u), None)
+
+            # 2b) senão, o produto cujo MLB mais se repete na página = destaque.
+            if not destaque:
+                mais_comum = Counter(_mlb_normalizado(u) for u in matches).most_common(1)[0][0]
+                destaque = next((u for u in matches if _mlb_normalizado(u) == mais_comum), matches[0])
+
+            link_produto = _url_limpa_produto(destaque)
+            print(f"[🔎] Produto em destaque extraído da vitrine: {link_produto}")
+            return link_produto
+
+        return _url_limpa_produto(url_atual)
 
     except Exception as e:
         print(f"[X] Erro ao desempacotar o link {url_curta}: {e}")
         return None
 
+
 def enviar_alerta_expiracao(status_code: int):
-    # ... (Mantenha a função de alerta idêntica ao código anterior)
     pass
 
+
 def converter_link_meli(url_original: str) -> str:
-    """Converte o link após garantir que temos a URL final do produto, sem rastros de concorrentes."""
+    """Gera o SEU short_url de afiliado (meli.la/...) pela API do programa de
+    afiliados do Mercado Livre.
+
+    A descoberta-chave: para a API devolver um short_url cujo `ref` ABRE O
+    PRODUTO (e não a página /social/.../lists, a "vitrine"), a URL enviada
+    precisa carregar o parâmetro `offer_type=BEST_PRICE`. Sem ele, o ML gera um
+    `ref` genérico que cai na lista de recomendações do perfil. Não é preciso
+    `wid`, fragmento (#...) nem os parâmetros matt_* — só a URL do produto
+    (/p/MLBxxxx) + offer_type=BEST_PRICE + a tag do afiliado.
+    """
     if not MELI_COOKIE or not MELI_X_CSRF_TOKEN or not MELI_AFFILIATE_TAG:
-        print("[!] Credenciais incompletas no .env.")
+        print("[!] Credenciais do Mercado Livre incompletas no .env "
+              "(MELI_COOKIE / MELI_X_CSRF_TOKEN / MELI_AFFILIATE_TAG).")
         return None
 
     print(f"[⏳] Processando link recebido: {url_original}")
-    
-    # 1. DESEMPACOTA O LINK PRIMEIRO
-    url_real_produto = desempacotar_link(url_original)
-    
-    if not url_real_produto:
-        print("[!] Não foi possível chegar a um link de produto válido. Ignorando.")
+
+    url_produto = desempacotar_link(url_original)
+
+    if not url_produto:
+        print("[!] Não foi possível chegar a um produto válido. Ignorando.")
         return None
 
-    # --- NOVO PASSO: LIMPEZA ---
-    # 1.5 LIMPA A URL (Remove rastreio do concorrente, mas mantém filtros de catálogo pdp_filters)
-    url_limpa = limpar_url_produto(url_real_produto)
+    # offer_type=BEST_PRICE é o que faz o short_url apontar para o produto.
+    parsed = urlparse(url_produto)
+    query = dict(parse_qsl(parsed.query))
+    query['offer_type'] = 'BEST_PRICE'
+    url_para_api = urlunparse(parsed._replace(query=urlencode(query)))
+    print(f"[📤] URL enviada à API: {url_para_api}")
 
-    # 2. EXTRAI O MLB (Usando a nova função inteligente na url limpa)
-    id_produto = extrair_buy_box_winner(url_limpa)
-    
-    if not id_produto:
-        print(f"[!] ID do produto (Buy Box) não encontrado na URL resolvida: {url_limpa}")
-        return None
-        
-    print(f"[🔎] ID Buy Box Winner identificado: {id_produto}")
-
-    # 3. SEGUE COM A CONVERSÃO NORMAL
     url_api = "https://www.mercadolivre.com.br/affiliate-program/api/v2/stripe/user/links"
-    
     headers = {
         "accept": "application/json, text/plain, */*",
         "content-type": "application/json",
         "cookie": MELI_COOKIE,
         "x-csrf-token": MELI_X_CSRF_TOKEN,
         "origin": "https://www.mercadolivre.com.br",
-        "referer": url_limpa, # <-- IMPORTANTE: Atualizado para a URL limpa
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "referer": url_para_api.split('#', 1)[0],
+        "user-agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Mobile Safari/537.36",
     }
-
-    payload = {
-        "url": url_limpa, # <-- IMPORTANTE: O Mercado Livre agora recebe a URL virgem
-        "tag": MELI_AFFILIATE_TAG,
-        "buy_box_winner": id_produto # A nova função já entrega sem o traço '-'
-    }
+    payload = {"url": url_para_api, "tag": MELI_AFFILIATE_TAG}
 
     try:
-        resposta = requests.post(url_api, headers=headers, json=payload, timeout=8)
-        
+        resposta = requests.post(url_api, headers=headers, json=payload, timeout=10)
+
         if resposta.status_code == 200:
             dados = resposta.json()
             link_afiliado = dados.get("short_url") or dados.get("link") or dados.get("url")
-            
             if link_afiliado:
-                print(f"[✓] Sucesso! Convertido para: {link_afiliado}")
+                print(f"[✓] Link de afiliado gerado: {link_afiliado}")
                 return link_afiliado
+            print(f"[!] API não retornou short_url: {dados}")
             return None
 
-        elif resposta.status_code in [401, 403]:
-            print(f"[⚠️] Erro {resposta.status_code}: Sessão expirada ou CSRF Token inválido!")
-            # enviar_alerta_expiracao(resposta.status_code) # Descomente se for usar
+        if resposta.status_code in (401, 403):
+            print(f"[⚠️] {resposta.status_code}: sessão/CSRF do Mercado Livre expirou — "
+                  "atualize MELI_COOKIE e MELI_X_CSRF_TOKEN no .env.")
+            enviar_alerta_expiracao(resposta.status_code)
             return None
-            
-        else:
-            # Adicionado resposta.text no print de erro para facilitar debugar se o ML reclamar de algo
-            print(f"[X] Erro API: {resposta.status_code} - {resposta.text}") 
-            return None
-            
-    except Exception as e:
-        print(f"[X] Erro no requests: {e}")
+
+        print(f"[X] Erro API ML: {resposta.status_code} - {resposta.text[:200]}")
         return None
-    
+
+    except Exception as e:
+        print(f"[X] Erro no requests ML: {e}")
+        return None
+
+
 def e_do_nicho(texto: str) -> bool:
-    """
-    Retorna False se encontrar qualquer palavra fora do nicho.
-    Se não encontrar nenhuma palavra bloqueada, deixa passar.
-    """
     texto_lower = texto.lower()
 
     for palavra in PALAVRAS_FORA_NICHO:
@@ -371,12 +366,10 @@ def e_do_nicho(texto: str) -> bool:
 
 
 def limpar_url_kabum(url: str) -> str:
-    """Remove todos os parâmetros de afiliado de terceiros da URL da KaBuM."""
     try:
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
 
-        # Remove parâmetros contaminados
         params_limpos = {
             k: v for k, v in params.items()
             if k not in PARAMS_AFILIADO_TERCEIRO
@@ -392,8 +385,8 @@ def limpar_url_kabum(url: str) -> str:
         print(f"[X] Erro ao limpar URL: {e}")
         return url
 
+
 def extrair_url_limpa_kabum(url_encurtada: str) -> str:
-    """Expande link encurtado e retorna URL limpa da KaBuM."""
     try:
         resposta = requests.get(
             url_encurtada,
@@ -404,7 +397,6 @@ def extrair_url_limpa_kabum(url_encurtada: str) -> str:
         url_expandida = resposta.url
         print(f"[→] Expandida: {url_expandida}")
 
-        # Extrai o ?ued= se caiu em awin1.com
         if 'awin1.com' in url_expandida:
             parsed = urlparse(url_expandida)
             params = parse_qs(parsed.query)
@@ -412,11 +404,10 @@ def extrair_url_limpa_kabum(url_encurtada: str) -> str:
             if ued:
                 url_destino = unquote(ued)
                 print(f"[→] Destino extraído: {url_destino}")
-                # ← LIMPA aqui antes de retornar
                 return limpar_url_kabum(url_destino)
 
         if 'kabum.com.br' in url_expandida:
-            return limpar_url_kabum(url_expandida)  # ← LIMPA também
+            return limpar_url_kabum(url_expandida)
 
         return None
 
@@ -426,14 +417,11 @@ def extrair_url_limpa_kabum(url_encurtada: str) -> str:
 
 
 def converter_link_kabum(url_original: str) -> str:
-    """Converte link da KaBuM para link de afiliado via API Awin."""
-
     dominios_encurtados = ['tidd.ly', 'eioferta.com.br', 'ofertou.xyz', 'awin1.com']
     if any(d in url_original for d in dominios_encurtados):
         print(f"[~] Link encurtado/terceiro detectado, extraindo URL original...")
         url_original = extrair_url_limpa_kabum(url_original)
 
-    # ✅ Validação: se retornou None ou não é KaBuM, ignora silenciosamente
     if not url_original or 'kabum.com.br' not in url_original:
         print(f"[!] Link ignorado — não é KaBuM: {url_original}")
         return None
@@ -472,25 +460,21 @@ def converter_link_kabum(url_original: str) -> str:
         print(f"[X] Erro ao converter link KaBuM: {e}")
         return None
 
+
 def converter_link_amazon(url_original: str) -> str:
-    """Converte link da Amazon adicionando seu tag de afiliado."""
     try:
-        # Resolve URLs encurtadas (amzn.to, a.co)
         if any(d in url_original for d in ['amzn.to', 'a.co']):
             resposta = requests.get(url_original, allow_redirects=True, timeout=5)
             url_original = resposta.url
 
-        # Limpa tags de afiliado antigos e parâmetros desnecessários
         from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
         parsed = urlparse(url_original)
         params = parse_qs(parsed.query)
 
-        # Remove tags de outros afiliados se existirem
         params.pop('tag', None)
         params.pop('linkCode', None)
         params.pop('linkId', None)
 
-        # Adiciona seu tag
         params['tag'] = [AMAZON_ASSOCIATE_TAG]
 
         nova_query = urlencode(params, doseq=True)
@@ -502,16 +486,12 @@ def converter_link_amazon(url_original: str) -> str:
         print(f"[X] Erro ao converter link Amazon: {e}")
         return None
 
-def converter_link_shopee(url_original: str) -> str:
-    """Converte link da Shopee para afiliado."""
 
+def converter_link_shopee(url_original: str) -> str:
     timestamp = int(time.time())
 
-    # ✅ Mutation inline como string (formato exato da documentação)
-    # ✅ subIds: array vazio [] ou strings simples alfanuméricas sem underscore
-    payload_str = '{"query":"mutation{generateShortLink(input:{originUrl:\\"%s\\",subIds:[\\"telegram\\"]}){shortLink}}"}'  % url_original
+    payload_str = '{"query":"mutation{generateShortLink(input:{originUrl:\\"%s\\",subIds:[\\"telegram\\"]}){shortLink}}"}' % url_original
 
-    # ✅ SHA256(app_id + timestamp + payload + secret)
     fator = SHOPEE_APP_ID + str(timestamp) + payload_str + SHOPEE_SECRET
     assinatura = hashlib.sha256(fator.encode('utf-8')).hexdigest()
 
@@ -540,26 +520,25 @@ def converter_link_shopee(url_original: str) -> str:
         print(f"[X] Erro ao converter link Shopee: {e}")
         return None
 
+
 def assinar_requisicao_ali(params: dict, secret: str) -> str:
-    """HMAC-SHA256 conforme nova plataforma AliExpress."""
     params_ordenados = sorted(params.items())
     base = ''.join(f"{k}{v}" for k, v in params_ordenados)
-    
-    # ✅ HMAC-SHA256: secret é a CHAVE, params são a MENSAGEM (sem envolver com secret)
+
     return hmac.new(
         secret.encode('utf-8'),
-        base.encode('utf-8'),      # ← sem f"{secret}{base}{secret}"
+        base.encode('utf-8'),
         hashlib.sha256
     ).hexdigest().upper()
 
-def converter_link_aliexpress(url_original: str) -> str:
 
-    timestamp = str(int(time.time() * 1000))  # ✅ milissegundos
+def converter_link_aliexpress(url_original: str) -> str:
+    timestamp = str(int(time.time() * 1000))
 
     params = {
         "app_key":             ALIEXPRESS_APP_KEY,
-        "timestamp":           timestamp,         # ✅ ms, não formatado
-        "sign_method":         "sha256",          # ✅ sha256, não md5
+        "timestamp":           timestamp,
+        "sign_method":         "sha256",
         "v":                   "2.0",
         "method":              "aliexpress.affiliate.link.generate",
         "promotion_link_type": "0",
@@ -571,7 +550,7 @@ def converter_link_aliexpress(url_original: str) -> str:
 
     try:
         resposta = requests.post(
-            "https://api-sg.aliexpress.com/sync",   # ✅ nova plataforma
+            "https://api-sg.aliexpress.com/sync",
             data=params,
             headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"}
         )
@@ -594,19 +573,14 @@ def converter_link_aliexpress(url_original: str) -> str:
         print(f"[X] Erro ao converter link AliExpress: {e}")
         return None
 
+
 def ja_foi_enviado(texto: str) -> bool:
-    """
-    Compara pelo título do produto extraído da mensagem.
-    Mesmo produto postado por canais diferentes = duplicata.
-    """
     dados = parsear_mensagem(texto)
     titulo = dados.get('titulo')
 
     if not titulo:
-        # Fallback: se não achou título, usa o texto completo
         titulo = texto[:100]
 
-    # Normaliza: minúsculo, sem espaços extras, sem emojis
     titulo_normalizado = re.sub(r'[^\w\s]', '', titulo).lower().strip()
     titulo_normalizado = re.sub(r'\s+', ' ', titulo_normalizado)
 
@@ -622,6 +596,7 @@ def ja_foi_enviado(texto: str) -> bool:
     print(f"[cache] MISS — novo produto: '{titulo_normalizado}'")
     return False
 
+
 def detectar_plataforma(link: str) -> str:
     if any(d in link for d in ['kabum.com.br', 'tidd.ly', 'eioferta.com.br', 'ofertou.xyz']):
         return 'kabum'
@@ -631,9 +606,10 @@ def detectar_plataforma(link: str) -> str:
         return 'aliexpress'
     if any(d in link for d in ['amazon.com.br', 'amzn.to', 'a.co']):
         return 'amazon'
-    if any(d in link for d in ['mercadolivre.com.br', 'meli.bz','meli.la']):
+    if any(d in link for d in ['mercadolivre.com.br', 'meli.bz', 'meli.la']):
         return 'mercadolivre'
     return 'desconhecido'
+
 
 def converter_link(link: str) -> str:
     plataforma = detectar_plataforma(link)
@@ -650,7 +626,7 @@ def converter_link(link: str) -> str:
     else:
         print(f"[!] Plataforma desconhecida: {link}")
         return
-    
+
 
 def parsear_mensagem(texto: str) -> dict:
     resultado = {
@@ -659,19 +635,17 @@ def parsear_mensagem(texto: str) -> dict:
         'cupom_codigo': None,
         'cupom_link': None,
         'link_produto': None,
-        'e_cupom_avulso': False   # ← adicione isso
+        'e_cupom_avulso': False
     }
 
     linhas = texto.strip().split('\n')
     linhas_strip = [l.strip() for l in linhas if l.strip()]
 
-    # Detecta cupom avulso
     palavras_cupom = ['cupom de desconto', 'novo cupom', 'cupons de desconto', 'ative aqui', 'resgate aqui']
     tem_preco_produto = any(p in texto.lower() for p in ['r$', 'por:', 'por '])
     if any(p in texto.lower() for p in palavras_cupom) and not tem_preco_produto:
         resultado['e_cupom_avulso'] = True
 
-    # Título
     ignorar_titulo = re.compile(
         r'^(https?://|💰|💵|💲|🎟|✅|🔗|🔴|🛒|📢|🏆|🐈|🔔|!|por[:\s]|cupom|resgate|link[:\s]|anuncio|amazon prime)',
         re.IGNORECASE
@@ -681,7 +655,6 @@ def parsear_mensagem(texto: str) -> dict:
             resultado['titulo'] = linha
             break
 
-    # Preço
     padrao_preco = re.search(
         r'(?:💰|💵|por[:\s]*)\s*R?\$?\s*([\d.,]+)',
         texto, re.IGNORECASE
@@ -689,13 +662,11 @@ def parsear_mensagem(texto: str) -> dict:
     if padrao_preco:
         resultado['preco'] = padrao_preco.group(0).strip()
 
-    # Todos os links com posição
     links_com_pos = [
         (m.start(), m.group())
         for m in re.finditer(r'https?://\S+', texto)
     ]
 
-    # Cupom código
     padrao_codigo = re.search(
         r'(?:cupom|🎟)[:\s]+([A-Z0-9_\-]{4,30})',
         texto, re.IGNORECASE
@@ -705,7 +676,6 @@ def parsear_mensagem(texto: str) -> dict:
         if not candidato.startswith('HTTP'):
             resultado['cupom_codigo'] = candidato
 
-    # Cupom link
     marcadores_cupom = list(re.finditer(
         r'(cupom|resgate|🎟|ative aqui)',
         texto, re.IGNORECASE
@@ -718,7 +688,6 @@ def parsear_mensagem(texto: str) -> dict:
                 resultado['cupom_link'] = links_depois[0][1]
                 break
 
-    # Link produto
     ignorar_urls = ['t.me/', 'amzn.to/3Og5w0m', 'amzn.to/4lM3PHH']
     for pos, url in links_com_pos:
         if any(x in url for x in ignorar_urls):
@@ -741,7 +710,6 @@ def formatar_mensagem(texto_original: str, link_convertido: str, plataforma: str
         'aliexpress': '📦', 'kabum': '🖥️', 'magalu': '🏪',
     }.get(plataforma, '🔥')
 
-    # Cupom avulso
     if dados['e_cupom_avulso']:
         msg = "🎟️ <b>CUPOM DE DESCONTO</b>\n\n"
         if dados['preco']:
@@ -752,7 +720,6 @@ def formatar_mensagem(texto_original: str, link_convertido: str, plataforma: str
             msg += f"\n🔗 {link_convertido}"
         return msg
 
-    # Oferta normal
     titulo = dados['titulo'] or "Oferta Encontrada"
     msg = f"{icone} <b>{titulo}</b>\n\n"
 
@@ -768,47 +735,36 @@ def formatar_mensagem(texto_original: str, link_convertido: str, plataforma: str
     msg += f"\n🔗 {link_convertido}"
     return msg
 
-def substituir_links_no_texto(texto: str) -> tuple[str, bool]:
-    """
-    Substitui os links do texto pelos links de afiliado convertidos.
-    Se falhar ao converter ou não reconhecer a plataforma de qualquer link,
-    aborta o processo e impede o envio da mensagem.
-    """
+
+def substituir_links_no_texto(texto: str):
     links_encontrados = re.findall(r'https?://\S+', texto)
     texto_final = texto
-    
-    # Se a mensagem não tiver nenhum link, já abortamos o envio
+
     if not links_encontrados:
         return texto_final, False
 
     for link in links_encontrados:
         plataforma = detectar_plataforma(link)
 
-        # Regra 1: Se encontrar um link que não é de plataforma conhecida, aborta a mensagem.
         if plataforma == 'desconhecido':
             print(f"[!] Link ignorado (plataforma desconhecida/não suportada): {link}")
             return texto_final, False
 
         link_convertido = converter_link(link)
 
-        # Regra 2: Se a plataforma é conhecida, mas a conversão falhou (retornou None), aborta a mensagem.
         if not link_convertido:
             print(f"[!] Falha ao converter o link da plataforma: {link}")
             return texto_final, False
 
-        # Se passou sem erros, substitui o link original pelo de afiliado
         texto_final = texto_final.replace(link, link_convertido)
 
-    # Se passou por TODOS os links da mensagem sem falhar, libera o envio
     return texto_final, True
+
 
 @client.on(events.NewMessage(chats=CANAIS_ALVO))
 async def escutar_promocoes(event):
     try:
         texto_da_mensagem = event.raw_text
-
-        # Remove rodapé/assinatura indesejada (ex: divulgação de outro canal)
-        # antes de qualquer outro processamento.
         texto_da_mensagem = remover_rodape(texto_da_mensagem)
 
         chat = await event.get_chat()
@@ -826,7 +782,6 @@ async def escutar_promocoes(event):
             print(f"[~] Duplicado ignorado ({nome_do_canal_origem})")
             return
 
-        # Substitui links pelos de afiliado
         texto_convertido, houve_conversao = substituir_links_no_texto(texto_da_mensagem)
 
         if not houve_conversao:
@@ -836,7 +791,6 @@ async def escutar_promocoes(event):
         print(f"\n[!] Oferta de: {nome_do_canal_origem}")
         print(f"Texto final:\n{texto_convertido}\n")
 
-        # Baixa imagem se houver
         caminho_imagem = None
         if event.message.media:
             try:
@@ -847,12 +801,11 @@ async def escutar_promocoes(event):
             except Exception as e:
                 print(f"[X] Erro ao baixar imagem: {e}")
 
-
         if caminho_imagem:
             enviar_para_meu_bot_com_imagem(texto_convertido, caminho_imagem)
             try:
                 os.remove(caminho_imagem)
-            except:
+            except Exception:
                 pass
         else:
             enviar_para_meu_bot(texto_convertido)
@@ -860,8 +813,8 @@ async def escutar_promocoes(event):
     except Exception as e:
         print(f"[X] Erro geral: {e}")
 
+
 def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
-    """Envia mensagem com foto para o canal via Bot API."""
     url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
 
     try:
@@ -879,12 +832,12 @@ def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
                 print("[✓] Postado com imagem no canal!")
             else:
                 print(f"[X] Erro ao postar com imagem: {resposta.text}")
-                # Fallback: tenta enviar só o texto
                 enviar_para_meu_bot(texto)
 
     except Exception as e:
         print(f"Erro ao enviar imagem: {e}")
-        enviar_para_meu_bot(texto)    
+        enviar_para_meu_bot(texto)
+
 
 def enviar_para_meu_bot(texto):
     url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -894,7 +847,6 @@ def enviar_para_meu_bot(texto):
         "parse_mode": "HTML"
     }
     try:
-        
         resposta = requests.post(url_api, json=payload)
         if resposta.status_code == 200:
             print("[✓] Postado no seu canal com sucesso!")
@@ -904,28 +856,25 @@ def enviar_para_meu_bot(texto):
         print(f"Erro de conexão: {e}")
 
 
-# def main():
-#     print("=== Teste de Conversão de Links ===\n")
+def main():
+    print("=== Teste de Conversão de Links ===\n")
 
-#     links_teste = [
-#        "https://s.shopee.com.br/15XmqxhTu"
-#        ]
+    links_teste = [
+       "https://meli.la/2tV2CE5"
+       ]
     
-#     for link in links_teste:
-#         plataforma = detectar_plataforma(link)
-#         link_convertido = converter_link(link)
+    for link in links_teste:
+        plataforma = detectar_plataforma(link)
+        link_convertido = converter_link(link)
 
-#         print(f"Plataforma : {plataforma}")
-#         print(f"Original   : {link}")
-#         print(f"Convertido : {link_convertido}")
-#         print("-" * 60)
+        print(f"Plataforma : {plataforma}")
+        print(f"Original   : {link}")
+        print(f"Convertido : {link_convertido}")
+        print("-" * 60)
 
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    main()
 
-print("Iniciando o observador de múltiplos canais...")
-with client:
-   client.run_until_disconnected()
-
-
-    
+# print("Iniciando o observador de múltiplos canais...")
+# with client:
+#    client.run_until_disconnected()
