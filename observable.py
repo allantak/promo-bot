@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl, urlparse, parse_qs, urlencode, urlunparse, u
 from collections import Counter
 import tempfile
 
+from PIL import Image
 from dotenv import load_dotenv
 import os
 
@@ -34,6 +35,12 @@ MELI_X_CSRF_TOKEN = os.getenv('MELI_X_CSRF_TOKEN')
 MELI_AFFILIATE_TAG = os.getenv('MELI_AFFILIATE_TAG')
 
 ADMIN_CHAT_ID = os.getenv('TELEGRAM_ADMIN_ID')
+
+# --- Marca d'água nas imagens das postagens ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CAMINHO_MARCA_DAGUA = os.path.join(BASE_DIR, 'waterMaker.png')
+MARCA_DAGUA_FRACAO = 0.26          # largura do selo ~26% da foto (cobre o selo do canal de origem no canto)
+MARCA_DAGUA_MARGEM_FRACAO = 0.0    # selo encostado no canto inferior direito
 
 
 CANAIS_ALVO = [
@@ -802,16 +809,50 @@ async def escutar_promocoes(event):
                 print(f"[X] Erro ao baixar imagem: {e}")
 
         if caminho_imagem:
-            enviar_para_meu_bot_com_imagem(texto_convertido, caminho_imagem)
-            try:
-                os.remove(caminho_imagem)
-            except Exception:
-                pass
+            caminho_final = aplicar_marca_dagua(caminho_imagem)
+            enviar_para_meu_bot_com_imagem(texto_convertido, caminho_final)
+            for p in {caminho_imagem, caminho_final}:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
         else:
             enviar_para_meu_bot(texto_convertido)
 
     except Exception as e:
         print(f"[X] Erro geral: {e}")
+
+
+def aplicar_marca_dagua(caminho_imagem_base: str) -> str:
+    """Sobrepõe waterMaker.png no canto inferior direito e devolve o caminho
+    da imagem final. À prova de falha: em qualquer erro devolve o caminho
+    original, garantindo que o post ainda saia (só sem marca)."""
+    try:
+        with Image.open(caminho_imagem_base) as base_img:
+            base = base_img.convert("RGBA")
+        with Image.open(CAMINHO_MARCA_DAGUA) as marca_img:
+            marca = marca_img.convert("RGBA")
+
+        # Redimensiona o selo para ~20% da largura, mantendo proporção
+        largura = max(1, int(base.width * MARCA_DAGUA_FRACAO))
+        altura = max(1, int(marca.height * (largura / marca.width)))
+        marca = marca.resize((largura, altura), Image.LANCZOS)
+
+        # Posição: canto inferior direito com margem
+        margem = int(base.width * MARCA_DAGUA_MARGEM_FRACAO)
+        pos = (base.width - largura - margem, base.height - altura - margem)
+
+        # Compõe usando o alpha do próprio PNG (opacidade sólida)
+        camada = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        camada.paste(marca, pos, marca)
+        final = Image.alpha_composite(base, camada).convert("RGB")
+
+        caminho_saida = tempfile.mktemp(suffix='.jpg')
+        final.save(caminho_saida, "JPEG", quality=90)
+        return caminho_saida
+    except Exception as e:
+        print(f"[X] Erro ao aplicar marca d'água: {e}")
+        return caminho_imagem_base   # fallback: envia a imagem original
 
 
 def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
