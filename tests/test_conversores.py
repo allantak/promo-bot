@@ -37,6 +37,17 @@ class TestConverterAmazon:
         assert "B0EXPANDIDO" in out
         assert "tag=meutag-20" in out
 
+    def test_expande_link_amazon(self, monkeypatch, fake_response):
+        def fake_get(url, **kw):
+            return fake_response(url="https://www.amazon.com.br/dp/B0EXPANDIDO")
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        out = observable.converter_link_amazon("https://link.amazon/B04w6NHYf")
+        assert "B0EXPANDIDO" in out
+        assert "tag=meutag-20" in out
+
+    def test_link_amazon_detectado_como_amazon(self):
+        assert observable.detectar_plataforma("https://link.amazon/B04w6NHYf") == "amazon"
+
 
 # ----------------------------------------------------------------------
 # converter_link_shopee

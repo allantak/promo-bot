@@ -463,7 +463,7 @@ def converter_link_kabum(url_original: str) -> str:
 
 def converter_link_amazon(url_original: str) -> str:
     try:
-        if any(d in url_original for d in ['amzn.to', 'a.co']):
+        if any(d in url_original for d in ['amzn.to', 'a.co', 'link.amazon']):
             resposta = requests.get(url_original, allow_redirects=True, timeout=5)
             url_original = resposta.url
 
@@ -604,7 +604,7 @@ def detectar_plataforma(link: str) -> str:
         return 'shopee'
     if any(d in link for d in ['aliexpress.com', 's.click.aliexpress.com']):
         return 'aliexpress'
-    if any(d in link for d in ['amazon.com.br', 'amzn.to', 'a.co']):
+    if any(d in link for d in ['amazon.com.br', 'amzn.to', 'a.co', 'link.amazon']):
         return 'amazon'
     if any(d in link for d in ['mercadolivre.com.br', 'meli.bz', 'meli.la']):
         return 'mercadolivre'
@@ -856,25 +856,26 @@ def enviar_para_meu_bot(texto):
         print(f"Erro de conexão: {e}")
 
 
-def main():
-    print("=== Teste de Conversão de Links ===\n")
+# def main():
+#     print("=== Teste de Conversão de Links ===\n")
 
-    links_teste = [
-       "https://meli.la/2tV2CE5"
-       ]
+#     links_teste = [
+#        "https://link.amazon/B04w6NHYf"
+#        ]
     
-    for link in links_teste:
-        plataforma = detectar_plataforma(link)
-        link_convertido = converter_link(link)
+#     for link in links_teste:
+#         plataforma = detectar_plataforma(link)
+#         link_convertido = converter_link(link)
 
-        print(f"Plataforma : {plataforma}")
-        print(f"Original   : {link}")
-        print(f"Convertido : {link_convertido}")
-        print("-" * 60)
+#         print(f"Plataforma : {plataforma}")
+#         print(f"Original   : {link}")
+#         print(f"Convertido : {link_convertido}")
+#         print("-" * 60)
+
+# if __name__ == "__main__":
+#     main()
 
 if __name__ == "__main__":
-    main()
-
-# print("Iniciando o observador de múltiplos canais...")
-# with client:
-#    client.run_until_disconnected()
+    print("Iniciando o observador de múltiplos canais...")
+    with client:
+        client.run_until_disconnected()
