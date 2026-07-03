@@ -5,4 +5,9 @@ __pycache__/
 *.pyc
 .github
 /CLAUDE.md
-/.claude  
+/.claude
+
+# Arquivos de teste da marca d'água (gerados localmente)
+teste.jpg
+resultado_marca_*.jpg
+preview_*.jpg
