@@ -5,12 +5,42 @@ Verifica que aplicar_marca_dagua() sobrepõe o selo no canto inferior
 direito, preserva as dimensões da foto e é à prova de falha (devolve a
 imagem original se algo der errado). Não faz rede.
 """
+import glob
 import os
 import tempfile
 
+import pytest
 from PIL import Image
 
 import observable
+
+
+FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+# Imagens reais de canais de origem, cada uma com o selo "OQMDV/ANÚNCIO"
+# (roxo) no canto inferior direito. Servem para garantir que a nossa marca
+# d'água cobre esse selo em fotos de tamanhos variados (720px–1280px).
+IMAGENS_COM_SELO = sorted(glob.glob(os.path.join(FIXTURES_DIR, "com_selo_*.jpg")))
+
+
+def _e_pixel_roxo(r, g, b) -> bool:
+    """Heurística que casa com o roxo/magenta saturado do selo do canal de
+    origem (R e B altos, G baixo), evitando azuis e cinzas."""
+    return r > 90 and b > 90 and g < r * 0.7 and g < b * 0.7 and (r + b) > 2 * g + 60
+
+
+def _contar_roxo_no_canto(caminho: str) -> int:
+    """Conta pixels roxos do selo no canto inferior direito (55%–100% da
+    imagem), onde o selo do canal de origem sempre aparece."""
+    with Image.open(caminho) as img:
+        im = img.convert("RGB")
+        W, H = im.size
+        px = im.load()
+        return sum(
+            1
+            for y in range(int(H * 0.55), H)
+            for x in range(int(W * 0.55), W)
+            if _e_pixel_roxo(*px[x, y])
+        )
 
 
 def _criar_foto_base(cor=(255, 0, 0), tamanho=(800, 600)) -> str:
@@ -79,3 +109,36 @@ class TestAplicarMarcaDagua:
             assert saida == base
         finally:
             os.remove(base)
+
+
+class TestCobreSeloDoCanalDeOrigem:
+    """Regressão do tamanho da marca (MARCA_DAGUA_FRACAO): a marca precisa
+    cobrir por completo o selo do canal de origem em fotos reais de tamanhos
+    variados. Se alguém reduzir demais a fração, estes testes quebram."""
+
+    def test_fixtures_existem(self):
+        assert IMAGENS_COM_SELO, (
+            "Nenhuma fixture com_selo_*.jpg encontrada em tests/fixtures/"
+        )
+
+    @pytest.mark.parametrize("caminho", IMAGENS_COM_SELO,
+                             ids=lambda p: os.path.basename(p))
+    def test_selo_original_e_detectavel(self, caminho):
+        # Sanidade: a fixture realmente tem o selo roxo no canto (senão o
+        # teste de cobertura passaria por engano).
+        assert _contar_roxo_no_canto(caminho) > 20
+
+    @pytest.mark.parametrize("caminho", IMAGENS_COM_SELO,
+                             ids=lambda p: os.path.basename(p))
+    def test_marca_cobre_o_selo(self, caminho):
+        saida = observable.aplicar_marca_dagua(caminho)
+        # aplicar_marca_dagua nunca deve cair no fallback (devolver a original)
+        # para uma imagem válida; senão o selo não seria coberto.
+        assert saida != caminho
+        try:
+            assert _contar_roxo_no_canto(saida) == 0, (
+                f"Selo do canal de origem ainda visível em {os.path.basename(caminho)} "
+                f"com MARCA_DAGUA_FRACAO={observable.MARCA_DAGUA_FRACAO}"
+            )
+        finally:
+            os.remove(saida)

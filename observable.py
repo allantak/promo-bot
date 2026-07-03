@@ -39,7 +39,7 @@ ADMIN_CHAT_ID = os.getenv('TELEGRAM_ADMIN_ID')
 # --- Marca d'água nas imagens das postagens ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CAMINHO_MARCA_DAGUA = os.path.join(BASE_DIR, 'waterMaker.png')
-MARCA_DAGUA_FRACAO = 0.26          # largura do selo ~26% da foto (cobre o selo do canal de origem no canto)
+MARCA_DAGUA_FRACAO = 0.19          # largura do selo ~19% da foto (menor valor que ainda cobre o selo do canal de origem no canto, testado em imagens 720px–1280px)
 MARCA_DAGUA_MARGEM_FRACAO = 0.0    # selo encostado no canto inferior direito
 
 
