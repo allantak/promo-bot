@@ -1,0 +1,47 @@
+name: CI/CD
+
+on:
+  push:       # testa em qualquer branch
+  pull_request:
+
+jobs:
+  # --- CI: roda a suíte de testes em toda push e todo PR para master ---
+  test:
+    name: Testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configura Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instala dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Roda os testes
+        run: pytest -v
+
+  # --- CD: só faz deploy se os testes passarem e for push na master ---
+  deploy:
+    name: Deploy
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd ~/bot-promo
+            git pull origin master
+            pip install -r requirements.txt --break-system-packages
+            sudo systemctl daemon-reload
+            sudo systemctl restart bot-promo

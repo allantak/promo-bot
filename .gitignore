@@ -3,7 +3,6 @@
 *.session-journal
 __pycache__/
 *.pyc
-.github
 /CLAUDE.md
 /.claude
 
