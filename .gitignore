@@ -6,6 +6,10 @@ __pycache__/
 /CLAUDE.md
 /.claude
 
+# Chaves SSH/privadas — NUNCA commitar (vão em GitHub Secrets, não no repo)
+*.key
+*.pem
+
 # Arquivos de teste da marca d'água (gerados localmente)
 teste.jpg
 resultado_marca_*.jpg
