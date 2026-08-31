@@ -52,16 +52,9 @@ CANAIS_ALVO = [
     '@OQMDVPROMO'
 ]
 
-# Deduplicação por LINK do produto (não mais pelo nome/título).
-# A chave é o identificador canônico do produto (ex.: 'amz:B08XYZ', 'meli:MLB123'),
-# o valor é irrelevante (usamos True). TTL/maxsize são tunáveis:
-#   - maxsize=500: cabe o volume de ofertas de uma janela sem despejar cedo demais.
-#   - ttl=21600 (6 h): reposts do mesmo produto costumam recorrer em horas. In-memory.
-cache_links = TTLCache(maxsize=500, ttl=21600)
-
-# Cache de resolução de encurtadores (url_curta -> chave canônica), para não reabrir
-# o mesmo link toda vez que ele reaparecer.
-cache_resolucoes = TTLCache(maxsize=500, ttl=21600)
+# Cache com TTL de 5 minutos e máximo de 500 entradas
+# A chave será o hash do link, o valor é irrelevante (usamos True)
+cache_links = TTLCache(maxsize=10, ttl=300)
 
 client = TelegramClient('minha_sessao', API_ID, API_HASH)
 padrao_link = re.compile(r'https?://\S+')
@@ -640,132 +633,26 @@ def converter_link_aliexpress(url_original: str) -> str:
         return None
 
 
-# Encurtadores por plataforma — não carregam o ID do produto, exigem seguir o
-# redirect até o destino real para extrair o identificador canônico.
-ENCURTADORES_AMAZON = ['amzn.to', 'a.co', 'link.amazon']
-ENCURTADORES_KABUM = ['tidd.ly', 'eioferta.com.br', 'ofertou.xyz', 'awin1.com']
-
-
-def _normalizar_link_fallback(url: str) -> str:
-    """Chave determinística quando não há ID de produto extraível (encurtador
-    irresolvível, falha de rede, plataforma desconhecida): host minúsculo + path,
-    sem query nem fragmento."""
-    url = (url or '').replace('&amp;', '&')
-    p = urlparse(url)
-    netloc = p.netloc.lower()
-    path = p.path.rstrip('/')
-    return f"{netloc}{path}" if netloc else url.strip()
-
-
-def _asin_amazon(url: str) -> str:
-    m = re.search(r'/(?:dp|gp/product|gp/aw/d|gp/offer-listing)/([A-Z0-9]{10})',
-                  url, re.IGNORECASE)
-    return m.group(1).upper() if m else ""
-
-
-def _ids_shopee(url: str) -> str:
-    m = re.search(r'i\.(\d+)\.(\d+)', url)
-    return f"{m.group(1)}.{m.group(2)}" if m else ""
-
-
-def _id_aliexpress(url: str) -> str:
-    m = re.search(r'/item/(\d+)', url)
-    return m.group(1) if m else ""
-
-
-def _id_kabum(url: str) -> str:
-    m = re.search(r'/produto/(\d+)', url)
-    return m.group(1) if m else ""
-
-
-def _resolver_redirect(url: str) -> str:
-    """Segue os redirects e devolve a URL final. Usado só para encurtadores sem
-    ID embutido (Amazon/Shopee/AliExpress). Pode lançar exceção — o chamador trata."""
-    resposta = requests.get(
-        url, allow_redirects=True, timeout=10,
-        headers={"User-Agent": "Mozilla/5.0"}
-    )
-    return resposta.url
-
-
-def chave_dedup_link(link: str) -> str:
-    """Devolve uma chave canônica e estável por PRODUTO a partir do link cru.
-
-    Etapa (a): tenta extrair o ID direto do link (sem rede).
-    Etapa (b): se não houver ID e o link for um encurtador, segue o redirect
-    (rede) para chegar ao produto real e extrai o ID de lá.
-    Qualquer falha cai num fallback determinístico (host + path)."""
-    if not link:
-        return ""
-
-    if link in cache_resolucoes:
-        return cache_resolucoes[link]
-
-    plataforma = detectar_plataforma(link)
-    chave = None
-
-    try:
-        if plataforma == 'mercadolivre':
-            mlb = _mlb_normalizado(link)
-            if not mlb:
-                # meli.la / meli.bz / vitrine /social/ — desempacotar segue o
-                # redirect e ainda extrai o produto em destaque da vitrine.
-                resolvido = desempacotar_link(link)
-                mlb = _mlb_normalizado(resolvido or "")
-            chave = f"meli:{mlb}" if mlb else None
-
-        elif plataforma == 'amazon':
-            asin = _asin_amazon(link)
-            if not asin and any(d in link for d in ENCURTADORES_AMAZON):
-                asin = _asin_amazon(_resolver_redirect(link))
-            chave = f"amz:{asin}" if asin else None
-
-        elif plataforma == 'kabum':
-            id_kabum = _id_kabum(limpar_url_kabum(link))
-            if not id_kabum and any(d in link for d in ENCURTADORES_KABUM):
-                resolvido = extrair_url_limpa_kabum(link)
-                id_kabum = _id_kabum(resolvido or "")
-            chave = f"kabum:{id_kabum}" if id_kabum else None
-
-        elif plataforma == 'shopee':
-            ids = _ids_shopee(link)
-            if not ids and 'shope.ee' in link:
-                ids = _ids_shopee(_resolver_redirect(link))
-            chave = f"shopee:{ids}" if ids else None
-
-        elif plataforma == 'aliexpress':
-            id_ali = _id_aliexpress(link)
-            if not id_ali and 's.click.aliexpress.com' in link:
-                id_ali = _id_aliexpress(_resolver_redirect(link))
-            chave = f"ali:{id_ali}" if id_ali else None
-    except Exception as e:
-        print(f"[cache] Falha ao resolver link p/ dedup ({link}): {e}")
-        chave = None
-
-    if not chave:
-        chave = _normalizar_link_fallback(link)
-
-    cache_resolucoes[link] = chave
-    return chave
-
-
 def ja_foi_enviado(texto: str) -> bool:
     dados = parsear_mensagem(texto)
-    link = dados.get('link_produto')
+    titulo = dados.get('titulo')
 
-    if not link:
-        # Sem link não há como deduplicar por link — não bloqueia.
-        print("[cache] Sem link de produto — dedup ignorado.")
-        return False
+    if not titulo:
+        titulo = texto[:100]
 
-    chave = chave_dedup_link(link)
+    titulo_normalizado = re.sub(r'[^\w\s]', '', titulo).lower().strip()
+    titulo_normalizado = re.sub(r'\s+', ' ', titulo_normalizado)
+
+    print(f"[cache] Título normalizado: '{titulo_normalizado}'")
+
+    chave = hashlib.md5(titulo_normalizado.encode()).hexdigest()
 
     if chave in cache_links:
-        print(f"[cache] HIT — duplicata bloqueada: {chave}")
+        print(f"[cache] HIT — duplicata bloqueada: '{titulo_normalizado}'")
         return True
 
     cache_links[chave] = True
-    print(f"[cache] MISS — novo produto: {chave}")
+    print(f"[cache] MISS — novo produto: '{titulo_normalizado}'")
     return False
 
 
