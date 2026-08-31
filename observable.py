@@ -36,6 +36,10 @@ MELI_AFFILIATE_TAG = os.getenv('MELI_AFFILIATE_TAG')
 
 ADMIN_CHAT_ID = os.getenv('TELEGRAM_ADMIN_ID')
 
+# Alerta de sessão expirada do ML: janela mínima entre dois avisos ao admin (segundos).
+ALERTA_EXPIRACAO_COOLDOWN = 1800
+_ultimo_alerta_expiracao = 0.0
+
 # --- Marca d'água nas imagens das postagens ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CAMINHO_MARCA_DAGUA = os.path.join(BASE_DIR, 'waterMaker.png')
@@ -295,7 +299,55 @@ def desempacotar_link(url_curta: str) -> str:
 
 
 def enviar_alerta_expiracao(status_code: int):
-    pass
+    """Avisa o admin no Telegram que a sessão do Mercado Livre expirou.
+
+    Disparado no 401/403 da API de afiliados: a partir daí NENHUM link do ML é
+    convertido, então o aviso precisa chegar na hora — em produção o print no
+    log passa batido. Usa a Bot API via requests (síncrono, igual aos outros
+    envios do módulo) para poder ser chamado de dentro do converter_link_meli.
+    """
+    global _ultimo_alerta_expiracao
+
+    if not ADMIN_CHAT_ID:
+        print("[!] TELEGRAM_ADMIN_ID não configurado — alerta de expiração não enviado.")
+        return
+
+    # Uma rajada de ofertas do ML gera um 403 por link; alerta só uma vez por janela.
+    agora = time.monotonic()
+    if _ultimo_alerta_expiracao and agora - _ultimo_alerta_expiracao < ALERTA_EXPIRACAO_COOLDOWN:
+        print("[i] Alerta de expiração silenciado (já avisado há pouco).")
+        return
+
+    horario = datetime.now(timezone(timedelta(hours=-3))).strftime('%d/%m/%Y %H:%M')
+    texto = (
+        "⚠️ <b>Mercado Livre: sessão expirada</b>\n\n"
+        f"A API de afiliados respondeu <b>{status_code}</b> às {horario} (BRT).\n"
+        "Nenhum link do Mercado Livre está sendo convertido até isso ser corrigido.\n\n"
+        "👉 Atualize <code>MELI_COOKIE</code> e <code>MELI_X_CSRF_TOKEN</code> "
+        "no <code>.env</code> e reinicie o bot."
+    )
+
+    url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": ADMIN_CHAT_ID,
+        "text": texto,
+        "parse_mode": "HTML",
+    }
+
+    # O try cobre só a chamada de rede: um print que falhe (console cp1252 no
+    # Windows não engole emoji) não pode ser confundido com falha de envio.
+    try:
+        resposta = requests.post(url_api, json=payload, timeout=10)
+    except Exception as e:
+        print(f"[X] Erro ao alertar o admin: {e}")
+        return
+
+    if resposta.status_code == 200:
+        # Só entra em cooldown se o aviso realmente saiu.
+        _ultimo_alerta_expiracao = agora
+        print("[v] Alerta de expiracao enviado ao admin.")
+    else:
+        print(f"[X] Falha ao alertar o admin: {resposta.status_code} - {resposta.text[:200]}")
 
 
 def converter_link_meli(url_original: str) -> str:

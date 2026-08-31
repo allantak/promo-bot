@@ -253,3 +253,68 @@ class TestSubstituirLinks:
         texto = "https://shopee.com.br/a e https://sitequalquer.com/b"
         _, ok = observable.substituir_links_no_texto(texto)
         assert ok is False
+
+
+# ----------------------------------------------------------------------
+# enviar_alerta_expiracao (aviso ao admin quando a sessão do ML cai)
+# ----------------------------------------------------------------------
+class TestAlertaExpiracao:
+    def _mockar(self, monkeypatch, fake_response, enviados):
+        """requests.post falso: 403 para a API do ML, 200 para a Bot API."""
+        monkeypatch.setattr(observable.requests, "get",
+                            lambda *a, **k: fake_response(url="https://www.mercadolivre.com.br/MLB-1-x", text=""))
+
+        def fake_post(url, **kw):
+            if "api.telegram.org" in url:
+                enviados.append(kw.get('json'))
+                return fake_response(status_code=200)
+            return fake_response(status_code=403, text="forbidden")
+
+        monkeypatch.setattr(observable.requests, "post", fake_post)
+
+    def test_403_avisa_o_admin(self, monkeypatch, fake_response):
+        enviados = []
+        self._mockar(monkeypatch, fake_response, enviados)
+
+        assert observable.converter_link_meli("https://meli.la/x") is None
+
+        assert len(enviados) == 1
+        assert str(enviados[0]['chat_id']) == "111"          # TELEGRAM_ADMIN_ID
+        assert "MELI_COOKIE" in enviados[0]['text']
+        assert "MELI_X_CSRF_TOKEN" in enviados[0]['text']
+
+    def test_cooldown_nao_repete_o_alerta(self, monkeypatch, fake_response):
+        enviados = []
+        self._mockar(monkeypatch, fake_response, enviados)
+
+        observable.converter_link_meli("https://meli.la/x")
+        observable.converter_link_meli("https://meli.la/y")
+
+        assert len(enviados) == 1  # rajada de 403 gera um único aviso
+
+    def test_falha_no_envio_nao_entra_em_cooldown(self, monkeypatch, fake_response):
+        tentativas = []
+
+        def fake_post(url, **kw):
+            if "api.telegram.org" in url:
+                tentativas.append(url)
+                return fake_response(status_code=500, text="erro")
+            return fake_response(status_code=403, text="forbidden")
+
+        monkeypatch.setattr(observable.requests, "get",
+                            lambda *a, **k: fake_response(url="https://www.mercadolivre.com.br/MLB-1-x", text=""))
+        monkeypatch.setattr(observable.requests, "post", fake_post)
+
+        observable.converter_link_meli("https://meli.la/x")
+        observable.converter_link_meli("https://meli.la/y")
+
+        assert len(tentativas) == 2  # aviso não saiu => tenta de novo
+
+    def test_sem_admin_configurado_nao_envia(self, monkeypatch, fake_response):
+        enviados = []
+        self._mockar(monkeypatch, fake_response, enviados)
+        monkeypatch.setattr(observable, "ADMIN_CHAT_ID", None)
+
+        observable.converter_link_meli("https://meli.la/x")
+
+        assert enviados == []
