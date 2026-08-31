@@ -97,26 +97,99 @@ class TestFormatarMensagem:
 
 
 # ----------------------------------------------------------------------
-# ja_foi_enviado (cache de deduplicação)
+# chave_dedup_link (chave canônica por produto, sem rede)
+# ----------------------------------------------------------------------
+class TestChaveDedupLink:
+    def test_amazon_mesma_asin_tags_diferentes_colidem(self):
+        a = observable.chave_dedup_link("https://www.amazon.com.br/dp/B08XYZ1234?tag=a")
+        b = observable.chave_dedup_link(
+            "https://www.amazon.com.br/dp/B08XYZ1234?tag=b&utm_source=x"
+        )
+        assert a == b == "amz:B08XYZ1234"   # ASIN tem exatamente 10 chars
+
+    def test_mercadolivre_mlb_com_fragmento_e_wid_colidem(self):
+        a = observable.chave_dedup_link(
+            "https://www.mercadolivre.com.br/produto/p/MLB-123456789"
+        )
+        b = observable.chave_dedup_link(
+            "https://www.mercadolivre.com.br/produto/p/MLB123456789#wid=MLB999&x=1"
+        )
+        assert a == b == "meli:MLB123456789"
+
+    def test_kabum_ignora_tracking_de_terceiro(self):
+        a = observable.chave_dedup_link("https://www.kabum.com.br/produto/555?aw_affid=x")
+        b = observable.chave_dedup_link("https://www.kabum.com.br/produto/555?utm_source=y")
+        assert a == b == "kabum:555"
+
+    def test_produtos_diferentes_nao_colidem(self):
+        a = observable.chave_dedup_link("https://www.amazon.com.br/dp/B08XYZ1234")
+        b = observable.chave_dedup_link("https://www.amazon.com.br/dp/B000OUTRO1")
+        assert a != b
+
+    def test_link_vazio(self):
+        assert observable.chave_dedup_link("") == ""
+
+
+# ----------------------------------------------------------------------
+# ja_foi_enviado (cache de deduplicação — agora pelo LINK)
 # ----------------------------------------------------------------------
 class TestJaFoiEnviado:
     def test_primeira_vez_falso_segunda_verdadeiro(self):
-        msg = "Monitor LG 27 polegadas\nhttps://shopee.com.br/x"
+        msg = "Monitor LG 27 polegadas\nhttps://www.amazon.com.br/dp/B08MONIT01"
         assert observable.ja_foi_enviado(msg) is False   # MISS
         assert observable.ja_foi_enviado(msg) is True    # HIT
 
-    def test_mesmo_titulo_canais_diferentes_e_duplicata(self):
-        a = "Headset HyperX Cloud\nhttps://shopee.com.br/a"
-        b = "Headset HyperX Cloud\nhttps://amazon.com.br/b"
+    def test_mesmo_titulo_links_diferentes_nao_e_duplicata(self):
+        # mesmo título, mas produtos (links) diferentes => NÃO é duplicata
+        a = "Headset HyperX Cloud\nhttps://www.amazon.com.br/dp/B08HEADS01"
+        b = "Headset HyperX Cloud\nhttps://www.amazon.com.br/dp/B08HEADS02"
         assert observable.ja_foi_enviado(a) is False
-        # mesmo título normalizado => duplicata, mesmo com link diferente
+        assert observable.ja_foi_enviado(b) is False
+
+    def test_mesmo_produto_titulo_e_tracking_diferentes_e_duplicata(self):
+        # mesmo produto (mesma ASIN) com título/tracking diferentes => duplicata
+        a = "🔥 SSD Kingston 480GB\nhttps://www.amazon.com.br/dp/B08SSD0001?tag=a"
+        b = "ssd kingston!!!\nhttps://www.amazon.com.br/dp/B08SSD0001?tag=b&utm_source=z"
+        assert observable.ja_foi_enviado(a) is False
         assert observable.ja_foi_enviado(b) is True
 
-    def test_titulos_diferentes_nao_colidem(self):
-        assert observable.ja_foi_enviado("Teclado Mecânico\nhttps://shopee.com.br/a") is False
-        assert observable.ja_foi_enviado("Webcam Full HD\nhttps://shopee.com.br/b") is False
+    def test_produtos_diferentes_nao_colidem(self):
+        assert observable.ja_foi_enviado(
+            "Teclado Mecânico\nhttps://www.amazon.com.br/dp/B08TECLAD1"
+        ) is False
+        assert observable.ja_foi_enviado(
+            "Webcam Full HD\nhttps://www.amazon.com.br/dp/B08WEBCAM1"
+        ) is False
 
-    def test_normalizacao_ignora_emoji_e_caixa(self):
-        assert observable.ja_foi_enviado("🔥 SSD Kingston 480GB\nhttps://shopee.com.br/a") is False
-        # mesmo produto, com caixa/emoji diferentes => duplicata
-        assert observable.ja_foi_enviado("ssd kingston 480gb!!!\nhttps://shopee.com.br/b") is True
+    def test_sem_link_nao_bloqueia(self):
+        assert observable.ja_foi_enviado("Oferta sem link nenhum") is False
+
+
+# ----------------------------------------------------------------------
+# chave_dedup_link com encurtadores (redirect mockado)
+# ----------------------------------------------------------------------
+class TestChaveDedupLinkEncurtador:
+    def test_dois_encurtadores_amazon_mesma_asin_colidem(self, monkeypatch, fake_response):
+        def fake_get(url, **kw):
+            return fake_response(url="https://www.amazon.com.br/dp/B08REAL001")
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        a = observable.chave_dedup_link("https://amzn.to/aaa")
+        b = observable.chave_dedup_link("https://amzn.to/bbb")
+        assert a == b == "amz:B08REAL001"
+
+    def test_meli_encurtado_resolve_para_mlb(self, monkeypatch, fake_response):
+        def fake_get(url, **kw):
+            return fake_response(url="https://www.mercadolivre.com.br/MLB-321-x", text="")
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        curto = observable.chave_dedup_link("https://meli.la/encurtado")
+        completo = observable.chave_dedup_link(
+            "https://www.mercadolivre.com.br/produto/p/MLB-321"
+        )
+        assert curto == completo == "meli:MLB321"
+
+    def test_falha_de_rede_cai_no_fallback(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("timeout")
+        monkeypatch.setattr(observable.requests, "get", boom)
+        # não quebra; devolve chave de fallback determinística (host+path)
+        assert observable.chave_dedup_link("https://amzn.to/xyz") == "amzn.to/xyz"

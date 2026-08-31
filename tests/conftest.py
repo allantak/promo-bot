@@ -35,10 +35,15 @@ import observable as botmod
 
 @pytest.fixture(autouse=True)
 def limpar_cache():
-    """Cada teste começa com o cache de deduplicação vazio."""
+    """Cada teste começa com os caches de deduplicação vazios e sem cooldown
+    pendente do alerta de expiração do Mercado Livre."""
     botmod.cache_links.clear()
+    botmod.cache_resolucoes.clear()
+    botmod._ultimo_alerta_expiracao = 0.0
     yield
     botmod.cache_links.clear()
+    botmod.cache_resolucoes.clear()
+    botmod._ultimo_alerta_expiracao = 0.0
 
 
 class FakeResponse:
