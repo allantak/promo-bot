@@ -223,6 +223,56 @@ class TestConverterLinkRoteamento:
 
 
 # ----------------------------------------------------------------------
+# expandir_link_curto (encurtadores genéricos tipo aoferta.net)
+# ----------------------------------------------------------------------
+class TestExpandirLinkCurto:
+    def test_expande_aoferta_para_amazon(self, monkeypatch, fake_response):
+        def fake_get(url, **kw):
+            return fake_response(
+                url="https://www.amazon.com.br/dp/B0D2JD6P86?tag=terceiro-20&linkCode=ogi"
+            )
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        out = observable.expandir_link_curto("https://aoferta.net/000nJkeb-Amazon")
+        assert "amazon.com.br/dp/B0D2JD6P86" in out
+
+    def test_dominio_normal_nao_chama_rede(self, monkeypatch):
+        def boom(*a, **kw):
+            raise AssertionError("não deveria chamar a rede")
+        monkeypatch.setattr(observable.requests, "get", boom)
+        url = "https://www.amazon.com.br/dp/B0ABC"
+        assert observable.expandir_link_curto(url) == url
+
+    def test_erro_de_rede_devolve_a_url_original(self, monkeypatch):
+        def fake_get(url, **kw):
+            raise Exception("timeout")
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        url = "https://aoferta.net/000nJkeb-Amazon"
+        assert observable.expandir_link_curto(url) == url
+
+    def test_converter_link_roteia_aoferta_para_amazon(self, monkeypatch, fake_response):
+        def fake_get(url, **kw):
+            return fake_response(
+                url="https://www.amazon.com.br/dp/B0D2JD6P86?tag=terceiro-20&linkCode=ogi"
+            )
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        out = observable.converter_link("https://aoferta.net/000nJkeb-Amazon")
+        assert "tag=meutag-20" in out
+        assert "terceiro-20" not in out
+        assert "B0D2JD6P86" in out
+
+    def test_mensagem_com_aoferta_e_convertida(self, monkeypatch, fake_response):
+        def fake_get(url, **kw):
+            return fake_response(url="https://www.amazon.com.br/dp/B0D2JD6P86")
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        texto, ok = observable.substituir_links_no_texto(
+            "Fone bom demais https://aoferta.net/000nJkeb-Amazon corre"
+        )
+        assert ok is True
+        assert "aoferta.net" not in texto
+        assert "tag=meutag-20" in texto
+
+
+# ----------------------------------------------------------------------
 # substituir_links_no_texto (decide se a mensagem é liberada)
 # ----------------------------------------------------------------------
 class TestSubstituirLinks:

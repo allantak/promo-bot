@@ -36,6 +36,10 @@ MELI_AFFILIATE_TAG = os.getenv('MELI_AFFILIATE_TAG')
 
 ADMIN_CHAT_ID = os.getenv('TELEGRAM_ADMIN_ID')
 
+# Encurtadores genéricos: podem apontar para qualquer loja, então o link precisa
+# ser expandido antes de detectar a plataforma (o slug não é confiável).
+ENCURTADORES_GENERICOS = ['aoferta.net']
+
 # Alerta de sessão expirada do ML: janela mínima entre dois avisos ao admin (segundos).
 ALERTA_EXPIRACAO_COOLDOWN = 1800
 _ultimo_alerta_expiracao = 0.0
@@ -656,6 +660,27 @@ def ja_foi_enviado(texto: str) -> bool:
     return False
 
 
+def expandir_link_curto(url: str) -> str:
+    """Segue os redirects de encurtadores genéricos e devolve a URL final da loja.
+    Para qualquer outro domínio (ou em caso de erro) devolve a URL original,
+    o que torna a função idempotente e segura de chamar mais de uma vez."""
+    if not url or not any(d in url for d in ENCURTADORES_GENERICOS):
+        return url
+
+    try:
+        resposta = requests.get(
+            url,
+            allow_redirects=True,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        print(f"[→] Encurtador expandido: {url} -> {resposta.url}")
+        return resposta.url
+    except Exception as e:
+        print(f"[X] Erro ao expandir encurtador {url}: {e}")
+        return url
+
+
 def detectar_plataforma(link: str) -> str:
     if any(d in link for d in ['kabum.com.br', 'tidd.ly', 'eioferta.com.br', 'ofertou.xyz']):
         return 'kabum'
@@ -671,6 +696,7 @@ def detectar_plataforma(link: str) -> str:
 
 
 def converter_link(link: str) -> str:
+    link = expandir_link_curto(link)
     plataforma = detectar_plataforma(link)
     if plataforma == 'shopee':
         return converter_link_shopee(link)
@@ -803,13 +829,14 @@ def substituir_links_no_texto(texto: str):
         return texto_final, False
 
     for link in links_encontrados:
-        plataforma = detectar_plataforma(link)
+        link_alvo = expandir_link_curto(link)
+        plataforma = detectar_plataforma(link_alvo)
 
         if plataforma == 'desconhecido':
             print(f"[!] Link ignorado (plataforma desconhecida/não suportada): {link}")
             return texto_final, False
 
-        link_convertido = converter_link(link)
+        link_convertido = converter_link(link_alvo)
 
         if not link_convertido:
             print(f"[!] Falha ao converter o link da plataforma: {link}")
