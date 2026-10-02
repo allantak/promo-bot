@@ -1,9 +1,15 @@
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, errors
 from cachetools import TTLCache
+import asyncio
+import html
+import json
 import re
 import requests
 import hashlib
 import hmac
+import signal
+import sys
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qsl, urlparse, parse_qs, urlencode, urlunparse, unquote
@@ -50,6 +56,40 @@ CAMINHO_MARCA_DAGUA = os.path.join(BASE_DIR, 'waterMaker.png')
 MARCA_DAGUA_FRACAO = 0.19          # largura do selo ~19% da foto (menor valor que ainda cobre o selo do canal de origem no canto, testado em imagens 720px–1280px)
 MARCA_DAGUA_MARGEM_FRACAO = 0.0    # selo encostado no canto inferior direito
 
+# --- Robustez em produção (VPS de 1 GB, conexão com o Telegram instável) ---
+# Com catch_up=True o Telethon entrega, ao reiniciar, o que chegou enquanto o bot
+# estava fora; ofertas mais velhas que isto são descartadas (preço/cupom vencido).
+# Folga: após um restart o Telethon pode levar até ~15 min para buscar um canal.
+IDADE_MAXIMA_POST = timedelta(minutes=60)
+# Vigia de updates: a cada VIGIA_INTERVALO compara o último post de cada canal
+# com o último que o handler viu. Se um post ficar VIGIA_TOLERANCIA sem chegar,
+# em VIGIA_FALHAS_MAX checagens seguidas, o bot está "surdo" e é reiniciado.
+# O próprio Telethon refaz a busca de cada canal a cada 15 min; a tolerância faz o
+# reinício cair sempre depois disso (2ª checagem ruim entre ~16 e 19 min).
+VIGIA_INTERVALO = 180
+VIGIA_TOLERANCIA = 780
+VIGIA_FALHAS_MAX = 2
+# Prazo de um post inteiro (conversão + imagem + envio) segurando a fila.
+PRAZO_POR_POST = 300
+# Vigia do event loop: uma thread separada derruba o processo se o loop ficar
+# BATIMENTO_LIMITE segundos sem bater (algo bloqueou o asyncio).
+BATIMENTO_INTERVALO = 30
+BATIMENTO_LIMITE = 600
+# Avisos ao admin em caminhos que podem se repetir (restart em laço): no máximo
+# um por tipo nesta janela. O controle fica em disco porque cada restart é um
+# processo novo.
+AVISO_COOLDOWN = 3600
+# Estado que precisa sobreviver a restarts (último post tratado por canal e
+# horário dos últimos avisos). Fica fora do git (.gitignore).
+CAMINHO_ESTADO = os.path.join(BASE_DIR, 'estado_bot.json')
+# Código de saída para sessão do Telegram inválida: o systemd não deve reiniciar
+# (RestartPreventExitStatus=78), porque só um login manual resolve.
+SAIDA_SESSAO_INVALIDA = 78
+# Imagem maior que isso (enviada como arquivo) não é baixada: o Pillow
+# precisaria de centenas de MB para aplicar a marca d'água numa VPS de 1 GB.
+TAMANHO_MAXIMO_IMAGEM = 10 * 1024 * 1024
+LADO_MAXIMO_IMAGEM = 2560
+
 
 CANAIS_ALVO = [
     '@PoisonPromos',
@@ -57,10 +97,12 @@ CANAIS_ALVO = [
 ]
 
 # Cache com TTL de 5 minutos e máximo de 500 entradas
-# A chave será o hash do link, o valor é irrelevante (usamos True)
-cache_links = TTLCache(maxsize=10, ttl=300)
+# A chave será o hash do título, o valor é irrelevante (usamos True)
+cache_links = TTLCache(maxsize=500, ttl=300)
 
-client = TelegramClient('minha_sessao', API_ID, API_HASH)
+# Caminho absoluto: a sessão não pode depender do diretório de onde o bot é iniciado.
+# catch_up=True: ao (re)iniciar, busca o que foi postado enquanto o bot estava fora.
+client = TelegramClient(os.path.join(BASE_DIR, 'minha_sessao'), API_ID, API_HASH, catch_up=True)
 padrao_link = re.compile(r'https?://\S+')
 
 # ============================================================
@@ -105,6 +147,7 @@ PALAVRAS_FORA_NICHO = {
     'perfume', 'colônia', 'roupa', 'jaqueta', 'casaco', 'moletom',
     'pijama', 'bermuda', 'chapéu', 'chapeu', 'boné', 'bone',
     'gravata', 'cinto', 'lenço', 'smartwatch',
+    'calçado', 'calcado', 'sapatênis', 'sapatenis',
 
     # Casa, cozinha e utilidades domésticas
     'panela', 'frigideira', 'wok', 'forma', 'assadeira',
@@ -120,23 +163,26 @@ PALAVRAS_FORA_NICHO = {
     'estante', 'guarda roupa', 'armário',
     'porta retrato', 'vaso', 'quadro', 'espelho',
     'garrafa térmica', 'copo', 'prato', 'tigela', 'talheres',
-    'organizador', 'cabide', 'porta sabão', 'iphone', 'ipad', 'MacBook', 'Apple Watch', 'AirPods', 'impressora', 'samsung galaxy', 'power bank', 'carregador portátil', 'ar condicionado', 'ketchup', 'mostarda', 'maionese', 'refrigerante', 'suco', 'água mineral', 'agua mineral', 'cerveja artesanal', 'vinho tinto', 'whisky escocês', 'suplemento alimentar', 'barra de proteína', 'ração para cachorro', 'ração para gato', 'coleira para cachorro', 'cama de cachorro', 'arranhador para gato', 'aquário para peixes', 'gaiola para pássaros', 'bicicleta de estrada', 'bike de montanha', 'esteira ergométrica', 'elíptico doméstico', 'halteres ajustáveis', 'anilha de peso olímpica', 'kettlebell de ferro fundido', 'barra de musculação olímpica', 'tapete de yoga antiderrapante', 'aula de yoga online', 'natação em piscina coberta', 'chuteira de futebol society', 'bola de futebol oficial da FIFA',
+    'faca', 'jogo de faca', 'jogo americano', 'xícara', 'xicara',
+    'organizador', 'organizadora', 'cabide', 'cabideiro', 'porta sabão', 'iphone', 'ipad', 'MacBook', 'Apple Watch', 'AirPods', 'impressora', 'samsung galaxy', 'power bank', 'carregador portátil', 'ar condicionado', 'ketchup', 'mostarda', 'maionese', 'refrigerante', 'suco', 'água mineral', 'agua mineral', 'cerveja artesanal', 'vinho tinto', 'whisky escocês', 'suplemento alimentar', 'barra de proteína', 'ração para cachorro', 'ração para gato', 'coleira para cachorro', 'cama de cachorro', 'arranhador para gato', 'aquário para peixes', 'gaiola para pássaros', 'bicicleta de estrada', 'bike de montanha', 'esteira ergométrica', 'elíptico doméstico', 'halteres ajustáveis', 'anilha de peso olímpica', 'kettlebell de ferro fundido', 'barra de musculação olímpica', 'tapete de yoga antiderrapante', 'aula de yoga online', 'natação em piscina coberta', 'chuteira de futebol society', 'bola de futebol oficial da FIFA',
     'caixa de som',
     # Ferramentas e construção
     'furadeira', 'parafusadeira', 'martelete', 'esmerilhadeira', 'cooktop',
     'serra', 'serrote', 'martelo', 'chave de fenda', 'alicate',
     'trena', 'nível', 'fita isolante', 'cimento', 'argamassa',
-    'tinta', 'pincel', 'rolo de pintura', 'lixa', 'mangueira', 'jogo',
+    'tinta', 'pincel', 'rolo de pintura', 'lixa', 'lixadeira', 'mangueira',
+    # (singular: o filtro já aceita o plural, "jogo de chaves" casa 'jogo de chave')
+    'jogo de chave', 'jogo de ferramenta', 'jogo de broca', 'jogo de soquete',
 
     # Beleza, higiene e saúde
     'shampoo', 'condicionador', 'creme de cabelo', 'máscara capilar',
     'hidratante', 'protetor solar', 'creme facial',
-    'maquiagem', 'base', 'batom', 'esmalte', 'blush', 'sombra',
-    'depilador', 'barbeador', 'aparelho de barbear', 'lâmina',
-    'secador de cabelo', 'chapinha', 'modelador', 'prancha',
+    'maquiagem', 'base líquida', 'base liquida', 'base facial', 'base de maquiagem', 'batom', 'esmalte', 'blush', 'sombra',
+    'depilador', 'depiladora', 'barbeador', 'aparelho de barbear', 'lâmina',
+    'secador de cabelo', 'chapinha', 'modelador', 'modeladora', 'prancha',
     'escova de dente', 'fio dental', 'enxaguante',
     'absorvente', 'fraldas adulto',
-    'suplemento', 'whey', 'creatina', 'proteína', 'proteina', 'copa', 'fifa', 'powerbank'
+    'suplemento', 'whey', 'creatina', 'proteína', 'proteina', 'copa', 'fifa', 'powerbank',
     'vitamina', 'remédio', 'remedio', 'medicamento',
     'termômetro', 'termometro', 'oxímetro', 'oximetro',
     'aparelho de pressão', 'balança',
@@ -157,13 +203,13 @@ PALAVRAS_FORA_NICHO = {
 
     # Pets
     'ração', 'racao', 'ração para cão', 'ração para gato',
-    'coleira', 'guia', 'cama de cachorro', 'arranhador',
-    'aquário', 'aquario', 'gaiola',
+    'coleira', 'guia para cachorro', 'guia retrátil', 'cama de cachorro', 'arranhador',
+    'aquario para peixes', 'gaiola',
 
     # Esporte (não gamer)
     'bicicleta', 'bike', 'esteira', 'elíptico', 'eliptico',
     'halteres', 'halter', 'anilha', 'kettlebell', 'barra',
-    'tapete de yoga', 'yoga', 'natação', 'natacao',
+    'tapete de yoga', 'natação', 'natacao',
     'chuteira', 'bola de futebol', 'luva de boxe',
     'raquete', 'skate', 'patins', 'capacete de bike',
 
@@ -416,13 +462,25 @@ def converter_link_meli(url_original: str) -> str:
         return None
 
 
-def e_do_nicho(texto: str) -> bool:
-    texto_lower = texto.lower()
+# Casa cada termo como palavra inteira (plural opcional), nunca como pedaço de
+# outra palavra: 'anel' não pode barrar "janela", 'ração' não pode barrar
+# "geração", 'regador' não pode barrar "carregador". Termos mais longos primeiro,
+# para o log mostrar o mais específico ('caixa de som' antes de 'caixa').
+_PADRAO_FORA_NICHO = re.compile(
+    r'(?<!\w)('
+    + '|'.join(sorted({re.escape(p.lower()) for p in PALAVRAS_FORA_NICHO}, key=len, reverse=True))
+    + r')(?:s|es)?(?!\w)'
+)
 
-    for palavra in PALAVRAS_FORA_NICHO:
-        if palavra in texto_lower:
-            print(f"[filtro] ❌ Rejeitado — '{palavra}'")
-            return False
+
+def e_do_nicho(texto: str) -> bool:
+    # URLs ficam de fora: links curtos têm letras aleatórias ("meli.la/2MCZETv" casava 'tv').
+    texto_sem_links = re.sub(r'https?://\S+', ' ', texto.lower())
+
+    achado = _PADRAO_FORA_NICHO.search(texto_sem_links)
+    if achado:
+        print(f"[filtro] ❌ Rejeitado — '{achado.group(1)}'")
+        return False
 
     print(f"[filtro] ✅ Dentro do nicho")
     return True
@@ -507,7 +565,8 @@ def converter_link_kabum(url_original: str) -> str:
             endpoint,
             params={"accessToken": AWIN_ACCESS_TOKEN},
             headers=headers,
-            json=payload
+            json=payload,
+            timeout=(5, 20)
         )
         dados = resposta.json()
         print(f"Resposta Awin: {dados}")
@@ -615,7 +674,8 @@ def converter_link_aliexpress(url_original: str) -> str:
         resposta = requests.post(
             "https://api-sg.aliexpress.com/sync",
             data=params,
-            headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"}
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
+            timeout=(5, 20)
         )
         dados = resposta.json()
         print(f"Resposta AliExpress: {dados}")
@@ -637,16 +697,25 @@ def converter_link_aliexpress(url_original: str) -> str:
         return None
 
 
-def ja_foi_enviado(texto: str) -> bool:
-    dados = parsear_mensagem(texto)
-    titulo = dados.get('titulo')
-
-    if not titulo:
-        titulo = texto[:100]
-
+def _titulo_normalizado(texto: str) -> str:
+    titulo = parsear_mensagem(texto).get('titulo') or texto[:100]
     titulo_normalizado = re.sub(r'[^\w\s]', '', titulo).lower().strip()
-    titulo_normalizado = re.sub(r'\s+', ' ', titulo_normalizado)
+    return re.sub(r'\s+', ' ', titulo_normalizado)
 
+
+def _chave_dedup(texto: str) -> str:
+    return hashlib.md5(_titulo_normalizado(texto).encode()).hexdigest()
+
+
+def liberar_dedup(texto: str):
+    """Desfaz a marcação de ja_foi_enviado quando a oferta NÃO chegou a ser
+    postada (ex.: conversão falhou): a mesma oferta vinda do outro canal ainda
+    deve ter a chance de sair."""
+    cache_links.pop(_chave_dedup(texto), None)
+
+
+def ja_foi_enviado(texto: str) -> bool:
+    titulo_normalizado = _titulo_normalizado(texto)
     print(f"[cache] Título normalizado: '{titulo_normalizado}'")
 
     chave = hashlib.md5(titulo_normalizado.encode()).hexdigest()
@@ -847,14 +916,115 @@ def substituir_links_no_texto(texto: str):
     return texto_final, True
 
 
+# ============================================================
+# ESTADO PERSISTENTE — sobrevive a restarts
+# ============================================================
+_trava_estado = threading.Lock()
+
+
+def _ler_estado() -> dict:
+    try:
+        with open(CAMINHO_ESTADO, encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _atualizar_estado(alterar):
+    """Lê, altera e grava o estado. Escrita atômica (os.replace): um crash no
+    meio não corrompe o arquivo. Seguro entre threads; nunca levanta exceção."""
+    with _trava_estado:
+        try:
+            estado = _ler_estado()
+            alterar(estado)
+            temporario = CAMINHO_ESTADO + '.tmp'
+            with open(temporario, 'w', encoding='utf-8') as f:
+                json.dump(estado, f)
+            os.replace(temporario, CAMINHO_ESTADO)
+        except Exception as e:
+            print(f"[X] Erro ao gravar {CAMINHO_ESTADO}: {e!r}")
+
+
+_ultimo_processado = None   # str(chat_id) -> maior id já tratado (carregado do disco na 1ª vez)
+
+
+def _processados() -> dict:
+    global _ultimo_processado
+    if _ultimo_processado is None:
+        _ultimo_processado = dict(_ler_estado().get('ultimo_processado', {}))
+    return _ultimo_processado
+
+
+def ja_processado(chat_id: int, msg_id: int) -> bool:
+    """True se o post já foi tratado (antes de um restart, inclusive). Com
+    catch_up=True o Telethon reentrega o que chegou depois do último estado que
+    ele salvou — até ~60 s antes de um restart abrupto; sem esta checagem, esses
+    posts sairiam duplicados no canal (o dedup por título vive só na memória)."""
+    return msg_id <= _processados().get(str(chat_id), 0)
+
+
+def marcar_processado(chat_id: int, msg_id: int):
+    processados = _processados()
+    if msg_id > processados.get(str(chat_id), 0):
+        processados[str(chat_id)] = msg_id
+        _atualizar_estado(lambda estado: estado.__setitem__('ultimo_processado', dict(processados)))
+
+
+# Um post por vez: preserva a ordem e, numa VPS de 1 GB, evita várias marcas
+# d'água (Pillow) em memória ao mesmo tempo durante uma rajada de ofertas.
+_trava_processamento = asyncio.Lock()
+
+# Último id de mensagem que o handler recebeu de cada canal (chat_id -> id).
+# O vigia de updates compara isso com o último post real do canal.
+_ultimo_id_visto = {}
+
+
+def registrar_visto(chat_id: int, msg_id: int):
+    if msg_id > _ultimo_id_visto.get(chat_id, 0):
+        _ultimo_id_visto[chat_id] = msg_id
+
+
+def post_antigo(data: datetime, agora: datetime = None) -> bool:
+    """True se a oferta é velha demais para repostar (chegou via catch_up depois
+    de uma parada longa: preço e cupom provavelmente já venceram)."""
+    agora = agora or datetime.now(timezone.utc)
+    return agora - data > IDADE_MAXIMA_POST
+
+
 @client.on(events.NewMessage(chats=CANAIS_ALVO))
 async def escutar_promocoes(event):
+    # Registra ANTES de qualquer filtro: para o vigia, "visto" é ter chegado aqui.
+    registrar_visto(event.chat_id, event.id)
+
+    if post_antigo(event.message.date):
+        print(f"[~] Post antigo ignorado (id {event.id}, de {event.message.date:%d/%m %H:%M} UTC)")
+        return
+
+    async with _trava_processamento:
+        # Checado dentro da trava: o mesmo post pode chegar ao vivo e pelo catch_up.
+        if ja_processado(event.chat_id, event.id):
+            print(f"[~] Post {event.id} já tratado antes — ignorado")
+            return
+        try:
+            # Prazo para o post inteiro: um await que nunca volta (ex.: resposta
+            # do Telegram descartada) não pode segurar a fila para sempre.
+            await asyncio.wait_for(processar_promocao(event), timeout=PRAZO_POR_POST)
+        except asyncio.TimeoutError:
+            print(f"[X] Post {event.id} passou de {PRAZO_POR_POST} s — desistindo e liberando a fila")
+        finally:
+            marcar_processado(event.chat_id, event.id)
+
+
+async def processar_promocao(event):
     try:
         texto_da_mensagem = event.raw_text
         texto_da_mensagem = remover_rodape(texto_da_mensagem)
 
-        chat = await event.get_chat()
-        nome_do_canal_origem = chat.title if hasattr(chat, 'title') else "Canal Desconhecido"
+        try:
+            chat = await asyncio.wait_for(event.get_chat(), timeout=30)
+            nome_do_canal_origem = chat.title if hasattr(chat, 'title') else "Canal Desconhecido"
+        except Exception:
+            nome_do_canal_origem = "Canal Desconhecido"
 
         links_encontrados = padrao_link.findall(texto_da_mensagem)
         if not links_encontrados:
@@ -868,38 +1038,61 @@ async def escutar_promocoes(event):
             print(f"[~] Duplicado ignorado ({nome_do_canal_origem})")
             return
 
-        texto_convertido, houve_conversao = substituir_links_no_texto(texto_da_mensagem)
+        # A conversão faz várias requisições HTTP síncronas: roda numa thread para
+        # não congelar o event loop do Telethon (pings e recebimento de updates).
+        texto_convertido, houve_conversao = await asyncio.to_thread(
+            substituir_links_no_texto, texto_da_mensagem
+        )
 
         if not houve_conversao:
+            liberar_dedup(texto_da_mensagem)
             print(f"[!] Nenhum link convertido — mensagem ignorada ({nome_do_canal_origem})")
             return
 
         print(f"\n[!] Oferta de: {nome_do_canal_origem}")
         print(f"Texto final:\n{texto_convertido}\n")
 
+        # Só baixa imagem (foto, prévia de link com foto, imagem enviada como
+        # arquivo). Vídeo/GIF não viram foto e só gastariam banda e disco.
         caminho_imagem = None
-        if event.message.media:
+        arquivo = event.message.file
+        if (arquivo and (arquivo.mime_type or '').startswith('image/')
+                and (arquivo.size or 0) <= TAMANHO_MAXIMO_IMAGEM):
+            destino = tempfile.mktemp(suffix='.jpg')
             try:
-                caminho_imagem = await client.download_media(
-                    event.message,
-                    file=tempfile.mktemp(suffix='.jpg')
+                caminho_imagem = await asyncio.wait_for(
+                    client.download_media(event.message, file=destino),
+                    timeout=60
                 )
             except Exception as e:
-                print(f"[X] Erro ao baixar imagem: {e}")
-
-        if caminho_imagem:
-            caminho_final = aplicar_marca_dagua(caminho_imagem)
-            enviar_para_meu_bot_com_imagem(texto_convertido, caminho_final)
-            for p in {caminho_imagem, caminho_final}:
+                print(f"[X] Erro ao baixar imagem (o post sai só com texto): {e!r}")
                 try:
-                    os.remove(p)
-                except Exception:
+                    os.remove(destino)
+                except OSError:
                     pass
-        else:
-            enviar_para_meu_bot(texto_convertido)
+
+        await asyncio.to_thread(publicar, texto_convertido, caminho_imagem)
 
     except Exception as e:
         print(f"[X] Erro geral: {e}")
+
+
+def publicar(texto: str, caminho_imagem: str = None):
+    """Aplica a marca d'água e posta no canal. Bloqueante (Pillow + HTTP):
+    chamar fora do event loop, via asyncio.to_thread."""
+    if not caminho_imagem:
+        enviar_para_meu_bot(texto)
+        return
+
+    caminho_final = aplicar_marca_dagua(caminho_imagem)
+    try:
+        enviar_para_meu_bot_com_imagem(texto, caminho_final)
+    finally:
+        for p in {caminho_imagem, caminho_final}:
+            try:
+                os.remove(p)
+            except Exception:
+                pass
 
 
 def aplicar_marca_dagua(caminho_imagem_base: str) -> str:
@@ -908,7 +1101,11 @@ def aplicar_marca_dagua(caminho_imagem_base: str) -> str:
     original, garantindo que o post ainda saia (só sem marca)."""
     try:
         with Image.open(caminho_imagem_base) as base_img:
+            # JPEG grande já é decodificado reduzido; o thumbnail garante o teto
+            # para qualquer formato (memória de uma VPS de 1 GB).
+            base_img.draft('RGB', (LADO_MAXIMO_IMAGEM, LADO_MAXIMO_IMAGEM))
             base = base_img.convert("RGBA")
+        base.thumbnail((LADO_MAXIMO_IMAGEM, LADO_MAXIMO_IMAGEM))
         with Image.open(CAMINHO_MARCA_DAGUA) as marca_img:
             marca = marca_img.convert("RGBA")
 
@@ -946,7 +1143,9 @@ def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
             }
             files = {"photo": foto}
 
-            resposta = requests.post(url_api, data=payload, files=files)
+            # (10, 60): o 1º valor limita a conexão E cada trecho do upload da
+            # foto; o 2º, a espera pela resposta depois do upload.
+            resposta = requests.post(url_api, data=payload, files=files, timeout=(10, 60))
 
             if resposta.status_code == 200:
                 print("[✓] Postado com imagem no canal!")
@@ -954,6 +1153,10 @@ def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
                 print(f"[X] Erro ao postar com imagem: {resposta.text}")
                 enviar_para_meu_bot(texto)
 
+    except requests.ReadTimeout as e:
+        # Sem fallback: o Telegram pode ter publicado a foto mesmo sem responder
+        # a tempo, e reenviar como texto duplicaria o post no canal.
+        print(f"[X] Timeout esperando o Telegram confirmar a foto (sem reenvio): {e}")
     except Exception as e:
         print(f"Erro ao enviar imagem: {e}")
         enviar_para_meu_bot(texto)
@@ -967,13 +1170,196 @@ def enviar_para_meu_bot(texto):
         "parse_mode": "HTML"
     }
     try:
-        resposta = requests.post(url_api, json=payload)
+        resposta = requests.post(url_api, json=payload, timeout=(5, 20))
         if resposta.status_code == 200:
             print("[✓] Postado no seu canal com sucesso!")
         else:
             print(f"[X] Erro ao postar: {resposta.text}")
     except Exception as e:
         print(f"Erro de conexão: {e}")
+
+
+# ============================================================
+# VIGIAS — o bot não pode ficar "vivo mas parado" sem ninguém perceber
+# ============================================================
+def avisar_admin(texto: str) -> bool:
+    """Manda um aviso (HTML) ao admin pela Bot API. Usado em caminhos de
+    encerramento, então nunca levanta exceção. Devolve True se o aviso saiu."""
+    if not ADMIN_CHAT_ID:
+        print("[!] TELEGRAM_ADMIN_ID não configurado — aviso ao admin não enviado.")
+        return False
+    try:
+        resposta = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": ADMIN_CHAT_ID, "text": texto, "parse_mode": "HTML"},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[X] Erro ao avisar o admin: {e!r}")
+        return False
+    if resposta.status_code != 200:
+        print(f"[X] Falha ao avisar o admin: {resposta.status_code} - {resposta.text[:200]}")
+        return False
+    return True
+
+
+def avisar_admin_com_cooldown(tipo: str, texto: str):
+    """Como avisar_admin, mas no máximo um aviso de cada `tipo` por AVISO_COOLDOWN.
+    O horário fica em disco: num laço de restarts cada tentativa é um processo
+    novo, e um controle em memória mandaria um aviso a cada ~10 s."""
+    agora = time.time()
+    ultimo = _ler_estado().get('avisos', {}).get(tipo, 0)
+    if agora - ultimo < AVISO_COOLDOWN:
+        print(f"[i] Aviso '{tipo}' ao admin silenciado (o último foi há {(agora - ultimo) / 60:.0f} min).")
+        return
+    if avisar_admin(texto):
+        _atualizar_estado(lambda estado: estado.setdefault('avisos', {}).__setitem__(tipo, agora))
+
+
+def reiniciar_processo(motivo: str):
+    """Encerra na hora com código 1 para o systemd (Restart=always) subir o bot de
+    novo. os._exit porque o event loop pode estar travado: um encerramento
+    'educado' dependeria justamente dele. Os posts que o Telethon reentregar no
+    próximo início são barrados por ja_processado()."""
+    print(f"[X] {motivo} Encerrando para o systemd reiniciar o bot.", flush=True)
+    avisar_admin_com_cooldown(
+        'reinicio', f"🔄 <b>Bot reiniciado automaticamente</b>\n\n{html.escape(motivo)}"
+    )
+    os._exit(1)
+
+
+def canal_atrasado(ultimo_visto: int, id_recente: int, data_recente: datetime,
+                   agora: datetime, tolerancia: float = VIGIA_TOLERANCIA) -> bool:
+    """True se o canal tem um post mais novo que o último que o handler recebeu
+    e esse post já devia ter chegado há mais de `tolerancia` segundos."""
+    return id_recente > ultimo_visto and (agora - data_recente).total_seconds() > tolerancia
+
+
+async def _post_mais_recente(entidade):
+    # Pula mensagens de serviço (post fixado, troca de foto...): elas não
+    # disparam NewMessage e fariam o vigia achar que o bot ficou surdo.
+    for msg in await client.get_messages(entidade, limit=5):
+        if msg.action is None:
+            return msg
+    return None
+
+
+async def checar_canais(entidades: dict) -> str:
+    """Uma rodada do vigia de updates. Devolve a descrição do problema que indica
+    bot surdo/sem conexão, ou None se está tudo em dia."""
+    agora = datetime.now(timezone.utc)
+    for canal in CANAIS_ALVO:
+        try:
+            if canal not in entidades:
+                entidades[canal] = await asyncio.wait_for(client.get_input_entity(canal), timeout=60)
+            msg = await asyncio.wait_for(_post_mais_recente(entidades[canal]), timeout=60)
+        except (asyncio.TimeoutError, OSError) as e:
+            # Sem resposta do Telegram: o mesmo sintoma do bot surdo.
+            return f"sem resposta do Telegram ao consultar {canal}: {e!r}"
+        except Exception as e:
+            # Erro do próprio canal (conta removida, canal privado, @ trocado):
+            # reiniciar não resolve — avisa e segue vigiando os outros canais.
+            print(f"[vigia] ⚠️ Não consegui consultar {canal}: {e!r}")
+            await asyncio.to_thread(
+                avisar_admin_com_cooldown, f'canal:{canal}',
+                f"⚠️ <b>Vigia não consegue ler {html.escape(canal)}</b>\n\n"
+                f"<code>{html.escape(repr(e))}</code>\n\n"
+                "A conta ainda é membro do canal? O @ do canal mudou?"
+            )
+            continue
+
+        if not msg:
+            continue
+        if msg.chat_id not in _ultimo_id_visto:
+            # Linha de base: o que já existia quando o bot subiu não é atraso.
+            registrar_visto(msg.chat_id, msg.id)
+        elif canal_atrasado(_ultimo_id_visto[msg.chat_id], msg.id, msg.date, agora):
+            return f"o post {msg.id} de {canal} ({msg.date:%d/%m %H:%M} UTC) não chegou ao bot"
+    return None
+
+
+async def vigiar_updates():
+    """Detecta o bot "surdo". Depois de uma queda de conexão seguida de uma
+    rajada de 'Server replied with a wrong session ID', o Telethon pode ficar
+    esperando para sempre um GetDifference cuja resposta foi descartada: a
+    conexão e os pings seguem vivos, mas nenhum post chega ao handler (foi o que
+    aconteceu em 29/09 e 30/09/2026: 4 h e 17 h de silêncio até um restart
+    manual). Aqui buscamos o último post de cada canal direto na API e
+    comparamos com o último que o handler recebeu."""
+    entidades = {}
+    falhas = 0
+    while True:
+        try:
+            problema = await checar_canais(entidades)
+        except Exception as e:
+            problema = f"falha inesperada no vigia: {e!r}"
+
+        if problema:
+            falhas += 1
+            print(f"[vigia] ⚠️ {problema} ({falhas}/{VIGIA_FALHAS_MAX})")
+            if falhas >= VIGIA_FALHAS_MAX:
+                reiniciar_processo(f"Updates do Telegram parados: {problema}.")
+        else:
+            falhas = 0
+
+        await asyncio.sleep(VIGIA_INTERVALO)
+
+
+_batimento = time.monotonic()
+_loop_ja_bateu = False
+
+
+async def bater_coracao():
+    global _batimento, _loop_ja_bateu
+    while True:
+        _batimento = time.monotonic()
+        _loop_ja_bateu = True
+        await asyncio.sleep(BATIMENTO_INTERVALO)
+
+
+def vigiar_event_loop():
+    """Roda numa thread própria: se algo síncrono travar o asyncio, nenhum vigia
+    async consegue agir — esta thread percebe o loop sem bater e derruba o
+    processo para o systemd reiniciar."""
+    while True:
+        time.sleep(BATIMENTO_INTERVALO)
+        parado = time.monotonic() - _batimento
+        if parado > BATIMENTO_LIMITE:
+            if _loop_ja_bateu:
+                reiniciar_processo(f"Event loop travado há {parado:.0f} s.")
+            else:
+                reiniciar_processo(f"A conexão inicial com o Telegram não concluiu em {parado:.0f} s.")
+
+
+def iniciar_vigia_do_loop():
+    global _batimento
+    _batimento = time.monotonic()
+    threading.Thread(target=vigiar_event_loop, name='vigia-event-loop', daemon=True).start()
+
+
+_tarefas_vigia = []
+
+
+async def iniciar_vigias():
+    # Guarda referência às tasks: o asyncio só mantém referência fraca a elas.
+    _tarefas_vigia.append(asyncio.create_task(bater_coracao()))
+    _tarefas_vigia.append(asyncio.create_task(vigiar_updates()))
+
+
+def encerrar_sessao_invalida(motivo: str):
+    """Sessão do Telegram revogada/não autorizada: reiniciar não resolve, só um
+    login manual. Sai com SAIDA_SESSAO_INVALIDA para o systemd não entrar em loop
+    (RestartPreventExitStatus=78 no deploy/bot-promo.override.conf)."""
+    print(f"[X] Sessão do Telegram inválida: {motivo}", flush=True)
+    avisar_admin_com_cooldown(
+        'sessao_invalida',
+        "⛔ <b>Bot parado: sessão do Telegram inválida</b>\n\n"
+        f"<code>{html.escape(motivo)}</code>\n\n"
+        "Só um novo login resolve. Na VPS: <code>sudo systemctl stop bot-promo</code>, depois "
+        "<code>cd ~/bot-promo &amp;&amp; python3 observable.py</code> para refazer o login "
+        "(Ctrl+C ao terminar) e <code>sudo systemctl start bot-promo</code>."
+    )
+    sys.exit(SAIDA_SESSAO_INVALIDA)
 
 
 # def main():
@@ -996,6 +1382,47 @@ def enviar_para_meu_bot(texto):
 #     main()
 
 if __name__ == "__main__":
+    # Sob o systemd o stdout é um pipe com buffer em blocos: sem isso os logs
+    # chegam atrasados ao journal e se perdem quando o processo morre.
+    sys.stdout.reconfigure(line_buffering=True)
+    # SIGTERM (stop/restart do systemd sem KillSignal=SIGINT) vira
+    # KeyboardInterrupt: o run_until_disconnected desconecta salvando o estado.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     print("Iniciando o observador de múltiplos canais...")
-    with client:
+
+    modo_terminal = sys.stdin.isatty()
+    if not modo_terminal:
+        # Já vigia a partida: o connect() inicial também pode travar.
+        iniciar_vigia_do_loop()
+    try:
+        if modo_terminal:
+            client.start()  # rodando no terminal: login interativo, se preciso
+        else:
+            # Sob o systemd não há teclado: pedir telefone viraria EOFError em loop.
+            client.start(phone=lambda: encerrar_sessao_invalida("a sessão não está autorizada."))
+        client.loop.run_until_complete(iniciar_vigias())
+        if modo_terminal:
+            # Só depois do login, que pode levar minutos digitando código/senha.
+            iniciar_vigia_do_loop()
+        # Versão síncrona de propósito: no SIGINT/SIGTERM ela desconecta salvando
+        # o estado que o catch_up usa no próximo início.
         client.run_until_disconnected()
+    except (errors.AuthKeyError, errors.UnauthorizedError) as e:
+        encerrar_sessao_invalida(repr(e))
+    except Exception as e:
+        # Ex.: sem rede após as tentativas de reconexão, AuthKeyNotFound. O
+        # systemd reinicia em 10 s; o admin fica sabendo (no máximo 1x/hora).
+        print(f"[X] Erro fatal: {e!r}", flush=True)
+        avisar_admin_com_cooldown(
+            'erro_fatal',
+            "❌ <b>Bot caiu com erro</b>\n\n"
+            f"<code>{html.escape(repr(e))}</code>\n\n"
+            "O systemd tenta subir de novo a cada 10 s."
+        )
+        raise
+    finally:
+        # Encerra os vigias sem o aviso "Task was destroyed but it is pending" a cada deploy.
+        for tarefa in _tarefas_vigia:
+            tarefa.cancel()
+        if _tarefas_vigia and not client.loop.is_closed():
+            client.loop.run_until_complete(asyncio.gather(*_tarefas_vigia, return_exceptions=True))

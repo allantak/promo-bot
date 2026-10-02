@@ -44,6 +44,19 @@ def limpar_cache():
     botmod._ultimo_alerta_expiracao = 0.0
 
 
+@pytest.fixture(autouse=True)
+def estado_isolado(tmp_path, monkeypatch):
+    """O estado persistente (estado_bot.json) vai para uma pasta temporária —
+    nunca para o diretório do projeto — e o estado em memória começa vazio."""
+    import asyncio
+    monkeypatch.setattr(botmod, "CAMINHO_ESTADO", str(tmp_path / "estado_bot.json"))
+    monkeypatch.setattr(botmod, "_ultimo_processado", None)
+    monkeypatch.setattr(botmod, "_trava_processamento", asyncio.Lock())
+    botmod._ultimo_id_visto.clear()
+    yield
+    botmod._ultimo_id_visto.clear()
+
+
 class FakeResponse:
     """Resposta HTTP falsa para substituir requests.get / requests.post."""
     def __init__(self, *, url="", text="", status_code=200, json_data=None):

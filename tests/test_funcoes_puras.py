@@ -154,33 +154,69 @@ class TestEDoNicho:
     def test_match_e_case_insensitive(self):
         assert observable.e_do_nicho("CAMISA POLO") is False
 
-    def test_quirk_substring_jogo_rejeitado(self):
-        # [QUIRK] 'jogo' está na blocklist (categoria ferramentas) e o filtro
-        # usa 'palavra in texto', então QUALQUER menção a "jogo" é barrada,
-        # inclusive jogos de videogame — provável falso positivo.
-        assert observable.e_do_nicho("Jogo para PS5") is False
+    def test_jogo_de_videogame_passa(self):
+        # 'jogo' sozinho barrava jogos de PS5; agora só "jogo de chave" etc.
+        assert observable.e_do_nicho("Jogo GTA VI PS5") is True
+        assert observable.e_do_nicho("Controle para jogos Machenike G3 V2") is True
+        assert observable.e_do_nicho("Jogo de chaves Tramontina 40 peças") is False
+        assert observable.e_do_nicho("Jogo De Chave Combinada 8 Peças") is False
+        assert observable.e_do_nicho("Jogo de Facas Tramontina") is False
 
-    def test_quirk_substring_tv(self):
-        # [QUIRK] 'tv' é substring; "Smart TV" é barrado (intencional p/ TVs),
-        # mas qualquer palavra contendo "tv" também seria.
+    def test_termos_que_antes_casavam_por_substring_continuam_barrados(self):
+        # Sem a substring, 'calça' não pega mais "calçado" e 'tênis' não pega
+        # "sapatênis": esses termos entraram na lista explicitamente.
+        assert observable.e_do_nicho("Calçado Social Masculino") is False
+        assert observable.e_do_nicho("Sapatênis Casual Couro") is False
+        assert observable.e_do_nicho("Kit 6 Xícaras de Porcelana") is False
+
+    def test_tv_continua_barrada(self):
         assert observable.e_do_nicho("Smart TV 50 polegadas") is False
+        assert observable.e_do_nicho("Kit 2 TVs LG 43") is False
+
+    def test_plural_continua_barrado(self):
+        assert observable.e_do_nicho("Kit 3 Camisetas Dry Fit") is False
+        assert observable.e_do_nicho("Conjunto 5 Panelas antiaderente") is False
+
+    def test_termos_com_maiuscula_na_lista_agora_filtram(self):
+        # 'MacBook', 'Apple Watch', 'AirPods' estavam na lista com maiúscula e
+        # nunca casavam com o texto em minúsculas.
+        assert observable.e_do_nicho("MacBook Air M3 13") is False
+        assert observable.e_do_nicho("Apple Watch SE 2") is False
+
+    # Falsos positivos reais medidos nos canais (27/09–01/10/2026): o filtro
+    # casava o termo como PEDAÇO de outra palavra ou dentro de URLs/cupons.
+    def test_palavra_dentro_de_outra_nao_barra(self):
+        assert observable.e_do_nicho("Gabinete Gamer Lian Li Janela Lateral") is True       # anel
+        assert observable.e_do_nicho("Notebook Gamer Acer Nitro V 15 13ª Geração") is True  # ração
+        assert observable.e_do_nicho("Carregador Baseus 140W GaN") is True                  # regador, base
+        assert observable.e_do_nicho("Monitor LG UltraGear painel IPS alta performance") is True  # anel, forma
+
+    def test_termos_ambiguos_nao_barram_produto_tech(self):
+        assert observable.e_do_nicho('Monitor Gamer AOC 27" Base Ajustável') is True
+        assert observable.e_do_nicho("Gabinete Gamer Aquário Pichau Atom") is True
+        assert observable.e_do_nicho("Notebook Lenovo Yoga Slim 7") is True
+        texto_ali = ('Microfone Fifine Ampligame A2\n'
+                     'Após entrar no link no APP, vá na guia "🇧🇷 Do Brasil"')
+        assert observable.e_do_nicho(texto_ali) is True
+
+    def test_url_e_cupom_nao_contam(self):
+        # Slug com termo bloqueado como palavra inteira: só passa porque a URL é ignorada.
+        assert observable.e_do_nicho(
+            "Mouse Logitech G305\nhttps://www.mercadolivre.com.br/smart-tv-samsung/p/MLB1") is True
+        assert observable.e_do_nicho("SSD Kingston NV3 1TB\n🎟️ Cupom: TVS3009") is True
 
 
 # ----------------------------------------------------------------------
-# PALAVRAS_FORA_NICHO — bug da vírgula faltando
+# PALAVRAS_FORA_NICHO — vírgula que faltava entre 'powerbank' e 'vitamina'
 # ----------------------------------------------------------------------
-class TestBlocklistBugVirgula:
-    def test_quirk_powerbank_vitamina_concatenados(self):
-        # [BUG] Falta uma vírgula entre 'powerbank' e 'vitamina' no código,
-        # então o Python concatena os literais e cria 'powerbankvitamina'.
-        # Resultado: nem "powerbank" nem "vitamina" filtram sozinhos.
-        assert "powerbankvitamina" in observable.PALAVRAS_FORA_NICHO
-        assert "vitamina" not in observable.PALAVRAS_FORA_NICHO
-        assert "powerbank" not in observable.PALAVRAS_FORA_NICHO
+class TestBlocklistVirgula:
+    def test_powerbank_e_vitamina_sao_termos_separados(self):
+        assert "powerbankvitamina" not in observable.PALAVRAS_FORA_NICHO
+        assert "vitamina" in observable.PALAVRAS_FORA_NICHO
+        assert "powerbank" in observable.PALAVRAS_FORA_NICHO
 
-    def test_quirk_vitamina_nao_filtra(self):
-        # Por causa do bug acima, um produto "vitamina" passa pelo filtro.
-        assert observable.e_do_nicho("Vitamina C 1000mg") is True
+    def test_vitamina_filtra(self):
+        assert observable.e_do_nicho("Vitamina C 1000mg") is False
 
 
 # ----------------------------------------------------------------------

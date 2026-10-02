@@ -14,3 +14,6 @@ __pycache__/
 teste.jpg
 resultado_marca_*.jpg
 preview_*.jpg
+# Estado do bot que sobrevive a restarts (gerado em produção)
+estado_bot.json
+estado_bot.json.tmp
