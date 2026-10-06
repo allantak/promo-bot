@@ -297,6 +297,47 @@ class TestSubstituirLinks:
         assert "https://afiliado/ok" in texto
         assert "shopee.com.br/x" not in texto
 
+    def test_cupom_ml_com_encurtador_mercadolivre_com_sec(self, monkeypatch, fake_response):
+        # Post real do OQMDV (06/10, 15h BRT): o link mercadolivre.com/sec/ cai
+        # na vitrine /social/ do afiliado de lá; vira o NOSSO link do produto.
+        texto = (
+            "NOVO CUPOM MERCADO LIVRE\n\n"
+            "✅ 15% OFF acima de R$249, limite R$60\n"
+            "🔴 CUPOM: CASA06101010\n\n"
+            "✨ SALVE AQUI E SIGA O CANAL PARA AJUDAR:\n"
+            "https://mercadolivre.com/sec/1qrUweQ"
+        )
+        vitrine = '<a href="https://www.mercadolivre.com.br/produto-x/p/MLB16268160#card-featured">ver</a>'
+        monkeypatch.setattr(observable.requests, "get", lambda *a, **k: fake_response(
+            url="https://www.mercadolivre.com.br/social/ao20251027154024?matt_word=gabriel",
+            text=vitrine))
+        monkeypatch.setattr(observable.requests, "post", lambda *a, **k: fake_response(
+            status_code=200, json_data={"short_url": "https://meli.la/meu"}))
+
+        final, ok = observable.substituir_links_no_texto(texto)
+
+        assert ok is True
+        assert "https://meli.la/meu" in final
+        assert "mercadolivre.com/sec" not in final
+        assert "CUPOM: CASA06101010" in final
+
+    def test_post_da_magalu_nao_e_publicado(self, monkeypatch, fake_response):
+        # Sem afiliado Magalu: o post inteiro é descartado, sem nem ir à rede.
+        # A rede responde como em produção (um except engoliria um erro falso).
+        chamadas = []
+
+        def fake_get(url, **k):
+            chamadas.append(url)
+            return fake_response(url=url)
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+        texto = ("Monitor Gamer AOC 32 QHD 180Hz\n💰 R$ 1.299\n"
+                 "https://www.magazineluiza.com.br/monitor-gamer-aoc/p/240419000/in/mlcd/"
+                 "?partner_id=3440&promoter_id=4511416&utm_source=botanalista")
+        final, ok = observable.substituir_links_no_texto(texto)
+        assert ok is False
+        assert "tag=" not in final
+        assert chamadas == []
+
     def test_um_link_invalido_no_meio_aborta_tudo(self, monkeypatch):
         # primeiro link converte, mas o segundo é desconhecido => aborta a msg
         monkeypatch.setattr(observable, "converter_link", lambda link: "https://afiliado/ok")

@@ -37,16 +37,35 @@ class TestDetectarPlataforma:
         assert observable.detectar_plataforma("https://mercadolivre.com.br/MLB-1") == "mercadolivre"
         assert observable.detectar_plataforma("https://meli.la/x") == "mercadolivre"
         assert observable.detectar_plataforma("https://meli.bz/x") == "mercadolivre"
+        # encurtador novo do ML (sem o .br) — o OQMDV já usa nos posts
+        assert observable.detectar_plataforma("https://mercadolivre.com/sec/1qrUweQ") == "mercadolivre"
 
     def test_desconhecido(self):
         assert observable.detectar_plataforma("https://google.com") == "desconhecido"
 
-    def test_quirk_substring_a_co_classifica_como_amazon(self):
-        # [BUG] A checagem da Amazon procura a substring 'a.co'. Qualquer
-        # domínio que contenha "a.co" (ex.: "magazineluiz-A.CO-m.br") é
-        # classificado como amazon por engano. Vale para muitos domínios
-        # terminados em "...a.com".
-        assert observable.detectar_plataforma("https://magazineluiza.com.br/x") == "amazon"
+    def test_dominio_que_contem_a_co_nao_e_amazon(self):
+        # Antes a checagem era por substring e 'a.co' casava com
+        # "magazineluiz-A.CO-m.br": o link da Magalu (com o promoter_id de
+        # outro divulgador) saía publicado como se fosse Amazon.
+        for url in ["https://www.magazineluiza.com.br/x/p/240419000/?promoter_id=4511416",
+                    "https://www.casasbahia.com.br/x",
+                    "https://www.kalunga.com.br/x"]:
+            assert observable.detectar_plataforma(url) == "desconhecido"
+
+    def test_dominio_da_loja_so_no_texto_do_link_nao_conta(self):
+        # O que vale é o domínio do link, não um pedaço da query/caminho.
+        assert observable.detectar_plataforma(
+            "https://sitequalquer.com/r?u=https://www.amazon.com.br/dp/B0") == "desconhecido"
+
+    def test_subdominio_e_maiusculas(self):
+        assert observable.detectar_plataforma("https://m.amazon.com.br/dp/B0") == "amazon"
+        assert observable.detectar_plataforma("HTTPS://AMZN.TO/x") == "amazon"
+        assert observable.detectar_plataforma("https://produto.mercadolivre.com.br/MLB-1") == "mercadolivre"
+
+    def test_awin_vai_para_o_conversor_da_kabum(self):
+        # O converter_link_kabum expande o awin1.com e descarta se não for KaBuM.
+        assert observable.detectar_plataforma(
+            "https://www.awin1.com/cread.php?awinmid=17729&ued=https%3A%2F%2Fwww.kabum.com.br%2Fproduto%2F1") == "kabum"
 
 
 # ----------------------------------------------------------------------

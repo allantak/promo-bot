@@ -585,7 +585,7 @@ def converter_link_kabum(url_original: str) -> str:
 
 def converter_link_amazon(url_original: str) -> str:
     try:
-        if any(d in url_original for d in ['amzn.to', 'a.co', 'link.amazon']):
+        if _link_e_de(url_original, ['amzn.to', 'a.co', 'link.amazon']):
             resposta = requests.get(url_original, allow_redirects=True, timeout=5)
             url_original = resposta.url
 
@@ -750,16 +750,30 @@ def expandir_link_curto(url: str) -> str:
         return url
 
 
+def _link_e_de(link: str, dominios) -> bool:
+    """True se o domínio do link é um destes ou subdomínio deles (www., pt.,
+    s.click. ...). Compara o domínio, nunca um pedaço do texto: por substring,
+    'a.co' (encurtador da Amazon) casava com "magazineluiz-a.co-m.br" e o link
+    da Magalu de outro divulgador saía publicado como se fosse Amazon."""
+    try:
+        dominio = urlparse(link).hostname or ''
+    except ValueError:
+        return False
+    return any(dominio == d or dominio.endswith('.' + d) for d in dominios)
+
+
 def detectar_plataforma(link: str) -> str:
-    if any(d in link for d in ['kabum.com.br', 'tidd.ly', 'eioferta.com.br', 'ofertou.xyz']):
+    # awin1.com: o converter_link_kabum expande e descarta o que não for KaBuM.
+    if _link_e_de(link, ['kabum.com.br', 'tidd.ly', 'eioferta.com.br', 'ofertou.xyz', 'awin1.com']):
         return 'kabum'
-    if any(d in link for d in ['shopee.com.br', 'shope.ee']):
+    if _link_e_de(link, ['shopee.com.br', 'shope.ee']):
         return 'shopee'
-    if any(d in link for d in ['aliexpress.com', 's.click.aliexpress.com']):
+    if _link_e_de(link, ['aliexpress.com']):
         return 'aliexpress'
-    if any(d in link for d in ['amazon.com.br', 'amzn.to', 'a.co', 'link.amazon']):
+    if _link_e_de(link, ['amazon.com.br', 'amzn.to', 'a.co', 'link.amazon']):
         return 'amazon'
-    if any(d in link for d in ['mercadolivre.com.br', 'meli.bz', 'meli.la']):
+    # 'mercadolivre.com' (sem .br) é o encurtador novo do ML: mercadolivre.com/sec/...
+    if _link_e_de(link, ['mercadolivre.com.br', 'mercadolivre.com', 'meli.bz', 'meli.la']):
         return 'mercadolivre'
     return 'desconhecido'
 
