@@ -17,3 +17,5 @@ preview_*.jpg
 # Estado do bot que sobrevive a restarts (gerado em produção)
 estado_bot.json
 estado_bot.json.tmp
+# Histórico de preços por produto (gerado em produção)
+historico_precos.db*

@@ -12,13 +12,15 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import parse_qsl, urlparse, parse_qs, urlencode, urlunparse, unquote
-from collections import Counter
+from urllib.parse import parse_qsl, urlparse, parse_qs, urlencode, urlunparse, unquote, urljoin
+from collections import Counter, deque
 import tempfile
 
 from PIL import Image
 from dotenv import load_dotenv
 import os
+
+import historico_precos
 
 load_dotenv()
 
@@ -90,6 +92,25 @@ SAIDA_SESSAO_INVALIDA = 78
 TAMANHO_MAXIMO_IMAGEM = 10 * 1024 * 1024
 LADO_MAXIMO_IMAGEM = 2560
 
+# --- Termômetro de preço (historico_precos.py): reação + comentário no post ---
+# quando a oferta está abaixo da média das promoções do produto.
+#   desligado: nem registra o histórico
+#   sombra:    registra e só loga o que comentaria
+#   teste:     o canal segue igual; a cópia do post + reação + comentário vão
+#              para o chat do admin, para ver como fica antes de ligar
+#   ligado:    reage e comenta no post do canal, assinando como o canal
+MODO_COMENTARIO_PRECO = (os.getenv('COMENTARIO_PRECO') or 'teste').strip().lower()
+# O post leva alguns segundos para chegar ao grupo de discussão do canal.
+ESPERAS_COMENTARIO = (2, 4, 8)
+PRAZO_COMENTARIO = 60
+# A conta que comenta é a mesma que escuta os canais: nada de rajada.
+MAX_COMENTARIOS_POR_HORA = 30
+SUSPENSAO_COMENTARIOS = 6 * 3600
+SUSPENSAO_PEER_FLOOD = 24 * 3600
+# Links curtos sem ID do produto: resolvidos só pelo cabeçalho do redirect.
+ENCURTADORES_SEM_ID = ['s.shopee.com.br', 'shope.ee', 's.click.aliexpress.com', 'a.aliexpress.com']
+MAX_RESOLUCOES_POR_POST = 3
+
 
 CANAIS_ALVO = [
     '@PoisonPromos',
@@ -104,6 +125,24 @@ cache_links = TTLCache(maxsize=500, ttl=300)
 # catch_up=True: ao (re)iniciar, busca o que foi postado enquanto o bot estava fora.
 client = TelegramClient(os.path.join(BASE_DIR, 'minha_sessao'), API_ID, API_HASH, catch_up=True)
 padrao_link = re.compile(r'https?://\S+')
+
+# URLs de produto que os conversores resolvem durante a conversão de UM post
+# (vitrine do ML, redirect da Amazon, Awin da KaBuM...): o histórico de preços
+# identifica o produto por elas sem repetir nenhuma requisição. É por thread
+# porque cada post é convertido numa thread do asyncio.to_thread.
+_coleta = threading.local()
+
+
+def _anotar_url_produto(url: str):
+    urls = getattr(_coleta, 'urls', None)
+    if urls is not None and url:
+        urls.append(url)
+
+
+# Destino dos links curtos de Shopee/AliExpress (o link de cupom se repete em
+# dezenas de posts: resolve uma vez só).
+cache_destinos = TTLCache(maxsize=1000, ttl=6 * 3600)
+_trava_destinos = threading.Lock()
 
 # ============================================================
 # RODAPÉ / ASSINATURA DE CANAL — linhas que devem ser removidas
@@ -416,6 +455,7 @@ def converter_link_meli(url_original: str) -> str:
     if not url_produto:
         print("[!] Não foi possível chegar a um produto válido. Ignorando.")
         return None
+    _anotar_url_produto(url_produto)
 
     # offer_type=BEST_PRICE é o que faz o short_url apontar para o produto.
     parsed = urlparse(url_produto)
@@ -547,6 +587,7 @@ def converter_link_kabum(url_original: str) -> str:
         print(f"[!] Link ignorado — não é KaBuM: {url_original}")
         return None
 
+    _anotar_url_produto(url_original)
     print(f"[✓] URL limpa para Awin: {url_original}")
 
     endpoint = f"https://api.awin.com/publishers/{AWIN_PUBLISHER_ID}/linkbuilder/generate"
@@ -588,6 +629,7 @@ def converter_link_amazon(url_original: str) -> str:
         if _link_e_de(url_original, ['amzn.to', 'a.co', 'link.amazon']):
             resposta = requests.get(url_original, allow_redirects=True, timeout=5)
             url_original = resposta.url
+            _anotar_url_produto(url_original)
 
         from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
         parsed = urlparse(url_original)
@@ -744,6 +786,7 @@ def expandir_link_curto(url: str) -> str:
             headers={"User-Agent": "Mozilla/5.0"}
         )
         print(f"[→] Encurtador expandido: {url} -> {resposta.url}")
+        _anotar_url_produto(resposta.url)
         return resposta.url
     except Exception as e:
         print(f"[X] Erro ao expandir encurtador {url}: {e}")
@@ -930,6 +973,69 @@ def substituir_links_no_texto(texto: str):
     return texto_final, True
 
 
+def resolver_destino(url: str) -> str:
+    """Destino de um link curto sem ID do produto (Shopee/AliExpress) lendo só
+    o cabeçalho Location do redirect: não baixa a página. None em erro.
+    Ex.: s.shopee.com.br/… → shopee.com.br/…-i.627750190.19998132816"""
+    with _trava_destinos:
+        if url in cache_destinos:
+            return cache_destinos[url]
+    try:
+        resposta = requests.get(url, allow_redirects=False, stream=True, timeout=(5, 10),
+                                headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            destino = resposta.headers.get('Location')
+        finally:
+            resposta.close()
+    except Exception as e:
+        print(f"[preço] Não consegui resolver {url}: {e!r}")
+        return None
+    if not destino:
+        return None
+    destino = urljoin(url, destino)
+    with _trava_destinos:
+        cache_destinos[url] = destino
+    return destino
+
+
+def avaliar_preco_do_post(texto: str, texto_convertido: str, urls_resolvidas: list, momento: datetime = None):
+    """Compara o preço da oferta com o histórico do produto (e registra no
+    histórico). Os links curtos de Shopee/Ali do texto ORIGINAL só são
+    resolvidos se o post tiver preço; os nossos links convertidos nunca (cada
+    abertura contaria como clique no nosso afiliado)."""
+    def resolver_links_curtos():
+        curtos = [u for u in padrao_link.findall(texto) if _link_e_de(u, ENCURTADORES_SEM_ID)]
+        return [resolver_destino(u) for u in curtos[:MAX_RESOLUCOES_POR_POST]]
+
+    urls = urls_resolvidas + padrao_link.findall(texto) + padrao_link.findall(texto_convertido)
+    avaliacao, motivo = historico_precos.avaliar_oferta(texto, urls, momento, resolver=resolver_links_curtos)
+    if avaliacao is None:
+        print(f"[preço] Sem avaliação ({motivo})")
+    else:
+        print(f"[preço] {historico_precos.descrever(avaliacao)}")
+    return avaliacao
+
+
+def converter_e_avaliar(texto: str, momento: datetime = None):
+    """Converte os links e, na mesma thread, avalia o preço contra o histórico
+    do produto. Registra mesmo se a conversão falhar (ex.: cookie do ML
+    vencido): a promoção existiu. A avaliação nunca derruba o post."""
+    _coleta.urls = []
+    try:
+        texto_convertido, houve_conversao = substituir_links_no_texto(texto)
+        urls_resolvidas = list(_coleta.urls)
+    finally:
+        _coleta.urls = None
+
+    avaliacao = None
+    if MODO_COMENTARIO_PRECO != 'desligado':
+        try:
+            avaliacao = avaliar_preco_do_post(texto, texto_convertido, urls_resolvidas, momento)
+        except Exception as e:
+            print(f"[preço] Erro ao avaliar o preço (o post segue normal): {e!r}")
+    return texto_convertido, houve_conversao, avaliacao
+
+
 # ============================================================
 # ESTADO PERSISTENTE — sobrevive a restarts
 # ============================================================
@@ -1054,8 +1160,9 @@ async def processar_promocao(event):
 
         # A conversão faz várias requisições HTTP síncronas: roda numa thread para
         # não congelar o event loop do Telethon (pings e recebimento de updates).
-        texto_convertido, houve_conversao = await asyncio.to_thread(
-            substituir_links_no_texto, texto_da_mensagem
+        # Na mesma thread, o preço é comparado com o histórico do produto.
+        texto_convertido, houve_conversao, avaliacao = await asyncio.to_thread(
+            converter_e_avaliar, texto_da_mensagem, event.message.date
         )
 
         if not houve_conversao:
@@ -1085,22 +1192,23 @@ async def processar_promocao(event):
                 except OSError:
                     pass
 
-        await asyncio.to_thread(publicar, texto_convertido, caminho_imagem)
+        message_id = await asyncio.to_thread(publicar, texto_convertido, caminho_imagem)
+        await tratar_comentario_de_preco(avaliacao, message_id)
 
     except Exception as e:
         print(f"[X] Erro geral: {e}")
 
 
 def publicar(texto: str, caminho_imagem: str = None):
-    """Aplica a marca d'água e posta no canal. Bloqueante (Pillow + HTTP):
-    chamar fora do event loop, via asyncio.to_thread."""
+    """Aplica a marca d'água e posta no canal. Devolve o id do post no canal
+    (ou None se não deu para confirmar). Bloqueante (Pillow + HTTP): chamar
+    fora do event loop, via asyncio.to_thread."""
     if not caminho_imagem:
-        enviar_para_meu_bot(texto)
-        return
+        return enviar_para_meu_bot(texto)
 
     caminho_final = aplicar_marca_dagua(caminho_imagem)
     try:
-        enviar_para_meu_bot_com_imagem(texto, caminho_final)
+        return enviar_para_meu_bot_com_imagem(texto, caminho_final)
     finally:
         for p in {caminho_imagem, caminho_final}:
             try:
@@ -1145,6 +1253,14 @@ def aplicar_marca_dagua(caminho_imagem_base: str) -> str:
         return caminho_imagem_base   # fallback: envia a imagem original
 
 
+def _message_id(resposta):
+    """Id da mensagem criada, tirado da resposta da Bot API (None se não vier)."""
+    try:
+        return resposta.json()['result']['message_id']
+    except Exception:
+        return None
+
+
 def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
     url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
 
@@ -1163,17 +1279,18 @@ def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
 
             if resposta.status_code == 200:
                 print("[✓] Postado com imagem no canal!")
-            else:
-                print(f"[X] Erro ao postar com imagem: {resposta.text}")
-                enviar_para_meu_bot(texto)
+                return _message_id(resposta)
+            print(f"[X] Erro ao postar com imagem: {resposta.text}")
+            return enviar_para_meu_bot(texto)
 
     except requests.ReadTimeout as e:
         # Sem fallback: o Telegram pode ter publicado a foto mesmo sem responder
         # a tempo, e reenviar como texto duplicaria o post no canal.
         print(f"[X] Timeout esperando o Telegram confirmar a foto (sem reenvio): {e}")
+        return None
     except Exception as e:
         print(f"Erro ao enviar imagem: {e}")
-        enviar_para_meu_bot(texto)
+        return enviar_para_meu_bot(texto)
 
 
 def enviar_para_meu_bot(texto):
@@ -1187,10 +1304,192 @@ def enviar_para_meu_bot(texto):
         resposta = requests.post(url_api, json=payload, timeout=(5, 20))
         if resposta.status_code == 200:
             print("[✓] Postado no seu canal com sucesso!")
-        else:
-            print(f"[X] Erro ao postar: {resposta.text}")
+            return _message_id(resposta)
+        print(f"[X] Erro ao postar: {resposta.text}")
     except Exception as e:
         print(f"Erro de conexão: {e}")
+    return None
+
+
+# ============================================================
+# TERMÔMETRO DE PREÇO — reação + comentário quando a oferta está boa
+# ============================================================
+# Comentário pela sessão do Telethon (assina como o canal); reação pela Bot API
+# (o bot que já posta no canal). A conta do Telethon é a mesma que escuta os
+# canais de origem: limite por hora e suspensão automática em erro de
+# permissão/flood, para um problema aqui nunca custar a escuta.
+_entidade_canal = None
+_comentarios_suspensos_ate = 0.0
+_comentarios_recentes = deque()
+_ERROS_PERMISSAO = (
+    errors.SendAsPeerInvalidError, errors.ChatAdminRequiredError, errors.ChatWriteForbiddenError,
+    errors.UserBannedInChannelError, errors.ChannelPrivateError, errors.ChatGuestSendForbiddenError,
+)
+
+
+def _bot_api(metodo: str, payload: dict):
+    """Chama a Bot API e devolve o 'result' (None em erro). Nunca levanta exceção."""
+    try:
+        resposta = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{metodo}", json=payload, timeout=10)
+    except Exception as e:
+        print(f"[preço] Erro de rede em {metodo}: {e!r}")
+        return None
+    if resposta.status_code != 200:
+        print(f"[preço] {metodo} falhou: {resposta.status_code} - {resposta.text[:200]}")
+        return None
+    try:
+        return resposta.json().get('result', True)
+    except Exception:
+        return True
+
+
+def reagir_ao_post(chat_id, message_id: int, emoji: str) -> bool:
+    resultado = _bot_api('setMessageReaction', {
+        "chat_id": chat_id, "message_id": message_id,
+        "reaction": [{"type": "emoji", "emoji": emoji}],
+    })
+    return resultado is not None
+
+
+def previa_no_admin(message_id: int, emoji: str, comentario: str) -> bool:
+    """Modo teste: copia o post do canal para o chat do admin, reage na cópia e
+    responde a ela com o comentário. O canal não muda nada."""
+    if not ADMIN_CHAT_ID:
+        print("[preço] TELEGRAM_ADMIN_ID não configurado — prévia não enviada.")
+        return False
+    copia = _bot_api('copyMessage', {"chat_id": ADMIN_CHAT_ID, "from_chat_id": MEU_CANAL_ID,
+                                     "message_id": message_id})
+    copia_id = copia.get('message_id') if isinstance(copia, dict) else None
+    if not copia_id:
+        return False
+    reagir_ao_post(ADMIN_CHAT_ID, copia_id, emoji)
+    enviado = _bot_api('sendMessage', {
+        "chat_id": ADMIN_CHAT_ID, "text": comentario, "parse_mode": "HTML",
+        "reply_parameters": {"message_id": copia_id},
+        "link_preview_options": {"is_disabled": True},
+    })
+    return enviado is not None
+
+
+async def _entidade_do_meu_canal():
+    """InputPeer do canal de destino. Se a sessão ainda não tiver o canal em
+    cache (sem access hash), percorre os diálogos uma vez para aprender."""
+    global _entidade_canal
+    if _entidade_canal is None:
+        try:
+            _entidade_canal = await asyncio.wait_for(client.get_input_entity(MEU_CANAL_ID), timeout=30)
+        except ValueError:
+            async def procurar():
+                async for dialogo in client.iter_dialogs():
+                    if dialogo.id == MEU_CANAL_ID:
+                        return dialogo.input_entity
+                return None
+            _entidade_canal = await asyncio.wait_for(procurar(), timeout=120)
+    return _entidade_canal
+
+
+def _pode_comentar() -> bool:
+    agora = time.monotonic()
+    if agora < _comentarios_suspensos_ate:
+        print("[preço] Comentários suspensos no momento — sem reação/comentário.")
+        return False
+    while _comentarios_recentes and agora - _comentarios_recentes[0] > 3600:
+        _comentarios_recentes.popleft()
+    if len(_comentarios_recentes) >= MAX_COMENTARIOS_POR_HORA:
+        print(f"[preço] Limite de {MAX_COMENTARIOS_POR_HORA} comentários/hora atingido — pulando.")
+        return False
+    return True
+
+
+async def _suspender_comentarios(motivo: str, segundos: int):
+    global _comentarios_suspensos_ate
+    _comentarios_suspensos_ate = time.monotonic() + segundos
+    print(f"[preço] Comentários suspensos por {segundos // 3600} h: {motivo}")
+    await asyncio.to_thread(
+        avisar_admin_com_cooldown, 'comentario_preco',
+        "⚠️ <b>Comentários de preço suspensos</b>\n\n"
+        f"<code>{html.escape(motivo)}</code>\n\n"
+        f"O bot tenta de novo em {segundos // 3600} h. Confira se a conta logada no bot é admin "
+        "do canal e consegue comentar como o canal no grupo de discussão."
+    )
+
+
+async def comentar_no_post(message_id: int, texto: str) -> bool:
+    """Comenta no post (grupo de discussão vinculado ao canal), assinando como
+    o canal. Nunca comenta como conta pessoal."""
+    canal = await _entidade_do_meu_canal()
+    if canal is None:
+        await _suspender_comentarios("o canal de destino não aparece nos diálogos da conta", 3600)
+        return False
+
+    ultimo_erro = None
+    for espera in ESPERAS_COMENTARIO:
+        await asyncio.sleep(espera)
+        try:
+            await asyncio.wait_for(client.send_message(
+                canal, texto, comment_to=message_id, send_as=canal,
+                parse_mode='html', link_preview=False, silent=True,
+            ), timeout=30)
+        except (errors.MsgIdInvalidError, ValueError, RuntimeError) as e:
+            # O post ainda não chegou ao grupo de discussão: espera mais um pouco.
+            ultimo_erro = e
+            continue
+        except errors.FloodWaitError as e:
+            if e.seconds > 10:
+                print(f"[preço] FloodWait de {e.seconds} s — comentário descartado.")
+                return False
+            await asyncio.sleep(e.seconds)
+            ultimo_erro = e
+            continue
+        except errors.PeerFloodError as e:
+            await _suspender_comentarios(repr(e), SUSPENSAO_PEER_FLOOD)
+            return False
+        except _ERROS_PERMISSAO as e:
+            await _suspender_comentarios(repr(e), SUSPENSAO_COMENTARIOS)
+            return False
+        _comentarios_recentes.append(time.monotonic())
+        print(f"[preço] 💬 comentou no post {message_id}")
+        return True
+
+    print(f"[preço] Não consegui comentar o post {message_id}: {ultimo_erro!r}")
+    await asyncio.to_thread(
+        avisar_admin_com_cooldown, 'comentario_preco_grupo',
+        "⚠️ <b>Não consegui comentar no post</b>\n\n"
+        f"<code>{html.escape(repr(ultimo_erro))}</code>\n\n"
+        "O canal ainda tem um grupo de discussão (comentários) vinculado?"
+    )
+    return False
+
+
+async def tratar_comentario_de_preco(avaliacao, message_id):
+    """Depois de publicar: reage e comenta (ligado), manda a prévia ao admin
+    (teste) ou só loga (sombra). O post já saiu: nunca levanta exceção."""
+    try:
+        comentario = historico_precos.texto_comentario(avaliacao)
+        if not comentario:
+            return
+        if not message_id:
+            print("[preço] Post sem id confirmado — sem reação/comentário.")
+            return
+        emoji = historico_precos.reacao(avaliacao)
+
+        if MODO_COMENTARIO_PRECO == 'sombra':
+            print(f"[preço] (sombra) comentaria no post {message_id} com {emoji}:\n{comentario}")
+        elif MODO_COMENTARIO_PRECO == 'teste':
+            ok = await asyncio.wait_for(
+                asyncio.to_thread(previa_no_admin, message_id, emoji, comentario), timeout=PRAZO_COMENTARIO)
+            print(f"[preço] 🧪 prévia do post {message_id} {'enviada' if ok else 'NÃO enviada'} ao admin")
+        elif MODO_COMENTARIO_PRECO == 'ligado' and _pode_comentar():
+            if not await asyncio.to_thread(reagir_ao_post, MEU_CANAL_ID, message_id, emoji):
+                await asyncio.to_thread(
+                    avisar_admin_com_cooldown, 'reacao_preco',
+                    f"⚠️ <b>Não consegui reagir com {emoji} no post</b>\n\n"
+                    "Confira se essa reação está liberada nas configurações do canal. "
+                    "O comentário sai do mesmo jeito."
+                )
+            await asyncio.wait_for(comentar_no_post(message_id, comentario), timeout=PRAZO_COMENTARIO)
+    except Exception as e:
+        print(f"[preço] Erro ao reagir/comentar (o post já saiu): {e!r}")
 
 
 # ============================================================

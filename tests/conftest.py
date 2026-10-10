@@ -25,11 +25,15 @@ os.environ.setdefault("MELI_COOKIE", "fake_cookie")
 os.environ.setdefault("MELI_X_CSRF_TOKEN", "fake_csrf")
 os.environ.setdefault("MELI_AFFILIATE_TAG", "ta20250609093813")
 os.environ.setdefault("TELEGRAM_ADMIN_ID", "111")
+# Os testes antigos não podem chamar a Bot API por causa do termômetro de
+# preço; os que testam os modos trocam observable.MODO_COMENTARIO_PRECO.
+os.environ.setdefault("COMENTARIO_PRECO", "sombra")
 
 # garante que 'import bot' encontre o módulo na pasta acima de tests/
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
+import historico_precos
 import observable as botmod
 
 
@@ -57,16 +61,34 @@ def estado_isolado(tmp_path, monkeypatch):
     botmod._ultimo_id_visto.clear()
 
 
+@pytest.fixture(autouse=True)
+def historico_isolado(tmp_path, monkeypatch):
+    """O histórico de preços vai para uma pasta temporária e o estado dos
+    comentários (suspensão, limite por hora, cache de redirects) começa zerado."""
+    monkeypatch.setattr(historico_precos, "CAMINHO_BANCO", str(tmp_path / "historico_precos.db"))
+    monkeypatch.setattr(botmod, "_entidade_canal", None)
+    monkeypatch.setattr(botmod, "_comentarios_suspensos_ate", 0.0)
+    botmod._comentarios_recentes.clear()
+    botmod.cache_destinos.clear()
+    yield
+    botmod._comentarios_recentes.clear()
+    botmod.cache_destinos.clear()
+
+
 class FakeResponse:
     """Resposta HTTP falsa para substituir requests.get / requests.post."""
-    def __init__(self, *, url="", text="", status_code=200, json_data=None):
+    def __init__(self, *, url="", text="", status_code=200, json_data=None, headers=None):
         self.url = url
         self.text = text
         self.status_code = status_code
+        self.headers = headers or {}
         self._json_data = json_data if json_data is not None else {}
 
     def json(self):
         return self._json_data
+
+    def close(self):
+        pass
 
 
 @pytest.fixture

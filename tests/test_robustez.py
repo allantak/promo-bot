@@ -5,14 +5,18 @@ Telegram (o client é usado só com métodos substituídos por fakes).
 """
 import asyncio
 import json
+import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 import requests
 from PIL import Image
+from telethon import errors
 
+import historico_precos
 import observable
 
 
@@ -434,3 +438,283 @@ class TestTimeouts:
 
         observable.enviar_para_meu_bot_com_imagem("oi", str(foto))
         assert [u.rsplit("/", 1)[1] for u in chamadas] == ["sendPhoto", "sendMessage"]
+
+
+# ----------------------------------------------------------------------
+# Termômetro de preço: reação + comentário no post (ou prévia no admin)
+# ----------------------------------------------------------------------
+URL_KABUM = "https://www.kabum.com.br/produto/1048336/processador-amd-ryzen-5-7600x3d-4-7ghz"
+TEXTO_KABUM = "Processador AMD Ryzen 5 7600X3D, 4.7GHz, AM5\n💰POR: R$ 1499\nLINK: https://tidd.ly/abc"
+
+
+def _semear_mes_passado(precos, chave="kabum:1048336"):
+    """Promoções do produto no mês passado (em relação a hoje)."""
+    _, mes = historico_precos.dia_e_mes_brt()
+    ano, m = map(int, historico_precos.mes_anterior(mes).split("-"))
+    for i, preco in enumerate(precos):
+        historico_precos.registrar_e_avaliar(chave, preco * 100, datetime(ano, m, 5 + i, 15, tzinfo=timezone.utc))
+
+
+class _BotApiFalsa:
+    """requests.post falso que responde como a Bot API e guarda as chamadas."""
+
+    def __init__(self, monkeypatch, fake_response, falhar=()):
+        self.chamadas = []
+        self.fake_response = fake_response
+        self.falhar = set(falhar)
+        monkeypatch.setattr(observable.requests, "post", self.post)
+
+    def post(self, url, json=None, **kw):
+        metodo = url.rsplit("/", 1)[1]
+        self.chamadas.append((metodo, json))
+        if metodo in self.falhar:
+            return self.fake_response(status_code=400, text='{"description":"REACTION_INVALID"}')
+        return self.fake_response(status_code=200, json_data={"ok": True, "result": {"message_id": 900}})
+
+    def metodos(self):
+        return [m for m, _ in self.chamadas]
+
+
+class TestComentarioDePreco:
+    def _processar(self, monkeypatch, texto=TEXTO_KABUM, message_id=555):
+        def converter(t):
+            observable._anotar_url_produto(URL_KABUM)     # como o converter_link_kabum faz
+            return t, True
+        monkeypatch.setattr(observable, "substituir_links_no_texto", converter)
+        publicados = []
+
+        def publicar(*a):
+            publicados.append(a)
+            return message_id
+        monkeypatch.setattr(observable, "publicar", publicar)
+        asyncio.run(observable.processar_promocao(_evento(texto)))
+        return publicados
+
+    def _telethon_falso(self, monkeypatch, send_message=None):
+        canal = object()
+
+        async def get_input_entity(alvo):
+            return canal
+        enviados = []
+
+        async def enviar(entidade, texto, **kw):
+            enviados.append((entidade, texto, kw))
+        monkeypatch.setattr(observable.client, "get_input_entity", get_input_entity)
+        monkeypatch.setattr(observable.client, "send_message", send_message or enviar)
+        monkeypatch.setattr(observable, "ESPERAS_COMENTARIO", (0, 0, 0))
+        return canal, enviados
+
+    # --- id do post publicado -------------------------------------------
+    def test_publicar_devolve_o_id_do_post(self, monkeypatch, fake_response, tmp_path):
+        monkeypatch.setattr(observable.requests, "post", lambda *a, **k: fake_response(
+            status_code=200, json_data={"ok": True, "result": {"message_id": 321}}))
+        assert observable.publicar("oi") == 321
+        foto = tmp_path / "f.jpg"
+        Image.new("RGB", (50, 50), "white").save(foto)
+        monkeypatch.setattr(observable, "aplicar_marca_dagua", lambda caminho: caminho)
+        assert observable.publicar("oi", str(foto)) == 321
+
+    def test_foto_recusada_cai_para_texto_e_devolve_o_id_do_texto(self, monkeypatch, fake_response, tmp_path):
+        foto = tmp_path / "f.jpg"
+        foto.write_bytes(b"x")
+        respostas = iter([fake_response(status_code=400, text="caption too long"),
+                          fake_response(status_code=200, json_data={"result": {"message_id": 654}})])
+        monkeypatch.setattr(observable.requests, "post", lambda *a, **k: next(respostas))
+        assert observable.enviar_para_meu_bot_com_imagem("oi", str(foto)) == 654
+
+    def test_timeout_da_foto_fica_sem_id(self, monkeypatch, tmp_path):
+        foto = tmp_path / "f.jpg"
+        foto.write_bytes(b"x")
+
+        def lento(*a, **k):
+            raise requests.ReadTimeout("lento")
+        monkeypatch.setattr(observable.requests, "post", lento)
+        assert observable.enviar_para_meu_bot_com_imagem("oi", str(foto)) is None
+
+    # --- modos ------------------------------------------------------------
+    def test_modo_teste_manda_previa_ao_admin(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "teste")
+        _semear_mes_passado([1799, 1749, 1799, 1799])        # R$ 1.499 = 16% abaixo
+        api = _BotApiFalsa(monkeypatch, fake_response)
+
+        async def proibido(*a, **k):
+            raise AssertionError("o modo teste não usa a conta do Telethon")
+        monkeypatch.setattr(observable.client, "send_message", proibido)
+
+        publicados = self._processar(monkeypatch)
+
+        assert len(publicados) == 1                          # o post sai normal no canal
+        assert api.metodos() == ["copyMessage", "setMessageReaction", "sendMessage"]
+        copia, reacao, comentario = (payload for _, payload in api.chamadas)
+        assert copia == {"chat_id": "111", "from_chat_id": observable.MEU_CANAL_ID, "message_id": 555}
+        assert reacao["message_id"] == 900 and reacao["reaction"] == [{"type": "emoji", "emoji": "🔥"}]
+        assert comentario["reply_parameters"] == {"message_id": 900}
+        assert comentario["text"].startswith("🔥 <b>Preço excelente!</b>")
+        assert historico_precos.OBSERVACAO in comentario["text"]
+
+    def test_modo_ligado_reage_e_comenta_como_o_canal(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _semear_mes_passado([1599, 1599])                    # R$ 1.499 = 6% abaixo
+        api = _BotApiFalsa(monkeypatch, fake_response)
+        canal, enviados = self._telethon_falso(monkeypatch)
+
+        self._processar(monkeypatch)
+
+        assert api.metodos() == ["setMessageReaction"]
+        assert api.chamadas[0][1]["chat_id"] == observable.MEU_CANAL_ID
+        assert api.chamadas[0][1]["message_id"] == 555
+        assert api.chamadas[0][1]["reaction"] == [{"type": "emoji", "emoji": "👍"}]
+        entidade, texto, kw = enviados[0]
+        assert entidade is canal and kw["send_as"] is canal and kw["comment_to"] == 555
+        assert kw["silent"] is True and kw["parse_mode"] == "html" and kw["link_preview"] is False
+        assert texto.startswith("✅ <b>Bom momento pra comprar!</b>")
+        assert "📉 6% abaixo da média de" in texto
+
+    def test_reacao_recusada_nao_impede_o_comentario(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _semear_mes_passado([1599, 1599])
+        api = _BotApiFalsa(monkeypatch, fake_response, falhar={"setMessageReaction"})
+        _, enviados = self._telethon_falso(monkeypatch)
+
+        self._processar(monkeypatch)
+
+        assert api.metodos() == ["setMessageReaction", "sendMessage"]   # reação + aviso ao admin
+        assert "reação está liberada" in api.chamadas[1][1]["text"]
+        assert len(enviados) == 1
+
+    def test_modo_sombra_so_loga(self, monkeypatch, fake_response, capsys):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "sombra")
+        _semear_mes_passado([1599, 1599])
+        api = _BotApiFalsa(monkeypatch, fake_response)
+        self._processar(monkeypatch)
+        assert api.chamadas == []
+        assert "(sombra) comentaria no post 555" in capsys.readouterr().out
+
+    def test_modo_desligado_nem_registra(self, monkeypatch):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "desligado")
+        self._processar(monkeypatch)
+        assert historico_precos.registrar_e_avaliar("kabum:1048336", 149900).referencias == ()
+
+    def test_sem_id_do_post_nao_comenta(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "teste")
+        _semear_mes_passado([1599, 1599])
+        api = _BotApiFalsa(monkeypatch, fake_response)
+        self._processar(monkeypatch, message_id=None)
+        assert api.chamadas == []
+
+    def test_preco_na_media_nao_comenta(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "teste")
+        _semear_mes_passado([1499, 1499])
+        api = _BotApiFalsa(monkeypatch, fake_response)
+        self._processar(monkeypatch)
+        assert api.chamadas == []
+
+    def test_conversao_que_falhou_ainda_registra_o_preco(self, monkeypatch):
+        def converter(t):
+            observable._anotar_url_produto(URL_KABUM)
+            return t, False                                  # ex.: cookie do ML vencido
+        monkeypatch.setattr(observable, "substituir_links_no_texto", converter)
+        monkeypatch.setattr(observable, "publicar", lambda *a: pytest.fail("não deveria publicar"))
+        asyncio.run(observable.processar_promocao(_evento(TEXTO_KABUM)))
+        _, mes = historico_precos.dia_e_mes_brt()
+        with sqlite3.connect(historico_precos.CAMINHO_BANCO) as con:
+            assert con.execute("SELECT n FROM precos_mes WHERE chave = 'kabum:1048336' AND mes = ?",
+                               (mes,)).fetchone() == (1,)
+
+    def test_avaliacao_quebrada_nao_derruba_o_post(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("banco corrompido")
+        monkeypatch.setattr(historico_precos, "avaliar_oferta", boom)
+        assert len(self._processar(monkeypatch)) == 1
+
+    # --- proteções da conta do Telethon --------------------------------------
+    def test_post_ainda_nao_chegou_ao_grupo_tenta_de_novo(self, monkeypatch, fake_response, capsys):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _semear_mes_passado([1599, 1599])
+        _BotApiFalsa(monkeypatch, fake_response)
+        tentativas = []
+
+        async def send_message(entidade, texto, **kw):
+            tentativas.append(kw["comment_to"])
+            if len(tentativas) < 3:
+                raise errors.MsgIdInvalidError(None)
+        self._telethon_falso(monkeypatch, send_message)
+
+        self._processar(monkeypatch)
+
+        assert tentativas == [555, 555, 555]
+        assert "comentou no post 555" in capsys.readouterr().out
+
+    def test_erro_de_permissao_suspende_e_avisa_uma_vez(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _semear_mes_passado([1599, 1599])
+        _BotApiFalsa(monkeypatch, fake_response)
+        avisos = []
+        monkeypatch.setattr(observable, "avisar_admin_com_cooldown", lambda tipo, texto: avisos.append(tipo))
+
+        async def send_message(*a, **k):
+            raise errors.SendAsPeerInvalidError(None)
+        self._telethon_falso(monkeypatch, send_message)
+
+        self._processar(monkeypatch)
+
+        assert avisos == ["comentario_preco"]
+        assert observable._pode_comentar() is False          # suspenso: o próximo nem tenta
+
+    def test_flood_wait_longo_descarta_sem_esperar(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _semear_mes_passado([1599, 1599])
+        _BotApiFalsa(monkeypatch, fake_response)
+        tentativas = []
+
+        async def send_message(*a, **k):
+            tentativas.append(1)
+            raise errors.FloodWaitError(None, capture=3000)
+        self._telethon_falso(monkeypatch, send_message)
+
+        inicio = time.monotonic()
+        self._processar(monkeypatch)
+        assert tentativas == [1]
+        assert time.monotonic() - inicio < 5
+
+    def test_envio_travado_e_limitado_pelo_prazo(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _semear_mes_passado([1599, 1599])
+        _BotApiFalsa(monkeypatch, fake_response)
+
+        async def travado(*a, **k):
+            await asyncio.sleep(3600)
+        self._telethon_falso(monkeypatch, travado)
+        real_wait_for = asyncio.wait_for
+
+        async def wait_for_rapido(aw, timeout):
+            return await real_wait_for(aw, min(timeout, 0.05))
+        monkeypatch.setattr(observable.asyncio, "wait_for", wait_for_rapido)
+
+        assert len(self._processar(monkeypatch)) == 1        # o post saiu e o handler voltou
+
+    def test_limite_de_comentarios_por_hora(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _semear_mes_passado([1599, 1599])
+        api = _BotApiFalsa(monkeypatch, fake_response)
+        _, enviados = self._telethon_falso(monkeypatch)
+        agora = time.monotonic()
+        observable._comentarios_recentes.extend([agora] * observable.MAX_COMENTARIOS_POR_HORA)
+
+        self._processar(monkeypatch)
+
+        assert api.chamadas == [] and enviados == []
+
+    def test_canal_fora_do_cache_e_achado_nos_dialogos(self, monkeypatch):
+        alvo = object()
+
+        async def get_input_entity(x):
+            raise ValueError("não está no cache da sessão")
+
+        async def iter_dialogs():
+            for dialogo in (SimpleNamespace(id=-1, input_entity=None),
+                            SimpleNamespace(id=observable.MEU_CANAL_ID, input_entity=alvo)):
+                yield dialogo
+        monkeypatch.setattr(observable.client, "get_input_entity", get_input_entity)
+        monkeypatch.setattr(observable.client, "iter_dialogs", iter_dialogs)
+        assert asyncio.run(observable._entidade_do_meu_canal()) is alvo

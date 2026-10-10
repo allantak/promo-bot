@@ -1,0 +1,139 @@
+2026-09-10T03:50:06+00:00 vps python3[844803]: [filtro] ✅ Dentro do nicho
+2026-09-10T03:50:06+00:00 vps python3[844803]: [cache] Título normalizado: 'placa de video geforce nvidia palit rtx5060ti 8gb dual gddr7 ne7506t019p1gb2062d'
+2026-09-10T03:50:06+00:00 vps python3[844803]: [cache] MISS — novo produto: 'placa de video geforce nvidia palit rtx5060ti 8gb dual gddr7 ne7506t019p1gb2062d'
+2026-09-10T03:50:06+00:00 vps python3[844803]: [!] Oferta de: OQMDV-PROMO
+2026-09-10T03:50:06+00:00 vps python3[844803]: Texto final:
+2026-09-10T03:50:06+00:00 vps python3[844803]: Placa de Video GeForce NVIDIA PALIT RTX5060TI 8GB DUAL GDDR7 NE7506T019P1-GB2062D
+2026-09-10T03:50:06+00:00 vps python3[844803]: 💰 POR: R$2.667
+2026-09-10T03:50:06+00:00 vps python3[844803]: ✅ CUPOM: SH0PP1NG
+2026-09-10T03:50:06+00:00 vps python3[844803]: ✅ PRODUTO AQUI:
+2026-09-10T03:50:06+00:00 vps python3[844803]: https://s.shopee.com.br/4AzpZUXaYO
+2026-09-10T03:50:06+00:00 vps python3[844803]: ANUNCIO
+2026-09-10T03:50:06+00:00 vps python3[844803]: [✓] Postado com imagem no canal!
+2026-09-10T03:50:06+00:00 vps python3[844803]: [filtro] ❌ Rejeitado — 'tv'
+2026-09-10T03:50:06+00:00 vps python3[844803]: [filtro] Fora do nicho — ignorado (Poison indicações e promoções)
+2026-09-10T03:50:06+00:00 vps python3[844803]: [filtro] ✅ Dentro do nicho
+2026-09-10T03:50:06+00:00 vps python3[844803]: [cache] Título normalizado: 'headphone havit h668bt anc híbrido bluetooth 54 bateria 80h preto'
+2026-09-10T03:50:06+00:00 vps python3[844803]: [cache] MISS — novo produto: 'headphone havit h668bt anc híbrido bluetooth 54 bateria 80h preto'
+2026-09-10T03:50:06+00:00 vps python3[844803]: [⏳] Processando link recebido: https://meli.la/19X4B96
+2026-09-10T03:50:06+00:00 vps python3[844803]: [🔎] Produto em destaque extraído da vitrine: https://www.mercadolivre.com.br/headphone-havit-h668bt-anc-hibrido-bluetooth-54-bateria-80h-preto/p/MLB46083470
+2026-09-10T03:50:06+00:00 vps python3[844803]: [📤] URL enviada à API: https://www.mercadolivre.com.br/headphone-havit-h668bt-anc-hibrido-bluetooth-54-bateria-80h-preto/p/MLB46083470?offer_type=BEST_PRICE
+2026-09-10T03:50:06+00:00 vps python3[844803]: [✓] Link de afiliado gerado: https://meli.la/19uSeMu
+2026-09-10T03:50:06+00:00 vps python3[844803]: [!] Oferta de: Poison indicações e promoções
+2026-09-10T03:50:06+00:00 vps python3[844803]: Texto final:
+2026-09-10T03:50:06+00:00 vps python3[844803]: Headphone Havit H668bt Anc Híbrido Bluetooth 5.4 Bateria 80h Preto
+2026-09-10T03:50:06+00:00 vps python3[844803]: 💵 R$ 129 REAIS ( PIX )
+2026-09-10T03:50:06+00:00 vps python3[844803]: 🎟️ USE O CUPOM: RESGATEFULL0909 (VÁLIDO PARA QUEM RESGATOU PELO APP)
+2026-09-10T03:50:06+00:00 vps python3[844803]: 🔗 LINK: https://meli.la/19uSeMu
+2026-09-10T03:50:06+00:00 vps python3[844803]: (ANUNCIO)
+2026-09-10T03:50:06+00:00 vps python3[844803]: 🏆Amazon prime (30 dias grátis)
+2026-09-10T03:50:06+00:00 vps python3[844803]: https://www.amazon.com.br/prime?primeCampaignId=prime_assoc_ft&ref_=as_li_ss_tl&tag=brocolis-20
+2026-09-10T03:50:06+00:00 vps python3[844803]: [✓] Postado com imagem no canal!
+2026-09-10T03:50:06+00:00 vps python3[844803]: [filtro] ✅ Dentro do nicho
+2026-09-10T03:50:06+00:00 vps python3[844803]: [cache] Título normalizado: 'console nintendo switch oled super mario bros 3 meses nso'
+2026-09-10T03:50:06+00:00 vps python3[844803]: [cache] MISS — novo produto: 'console nintendo switch oled super mario bros 3 meses nso'
+2026-09-10T03:50:06+00:00 vps python3[844803]: [!] Oferta de: Poison indicações e promoções
+2026-09-10T03:50:06+00:00 vps python3[844803]: Texto final:
+2026-09-10T03:50:06+00:00 vps python3[844803]: Console Nintendo Switch OLED + Super Mario Bros + 3 Meses NSO
+2026-09-10T03:50:06+00:00 vps python3[844803]: 💵 R$ 1839
+2026-09-10T03:50:06+00:00 vps python3[844803]: 🎟️ Cupom: SH0PP1NG
+2026-09-10T03:50:06+00:00 vps python3[844803]: 🔗 LINK: https://s.shopee.com.br/5VVDBjEXci
+2026-09-10T03:50:06+00:00 vps python3[844803]: (ANUNCIO)
+2026-09-10T03:50:06+00:00 vps python3[844803]: 🏆Amazon prime (30 dias grátis)
+2026-09-10T03:50:06+00:00 vps python3[844803]: https://www.amazon.com.br/prime?primeCampaignId=prime_assoc_ft&ref_=as_li_ss_tl&tag=brocolis-20
+2026-09-10T03:50:06+00:00 vps python3[844803]: [filtro] ✅ Dentro do nicho
+2026-09-10T03:50:06+00:00 vps python3[844803]: [cache] Título normalizado: 'placa de vídeo galax geforce rtx 3080 serious gaming 10gb lhr rgb dlss ray tracing'
+2026-09-10T12:10:28+00:00 vps python3[844803]: [cache] MISS — novo produto: 'placa de vídeo galax geforce rtx 3080 serious gaming 10gb lhr rgb dlss ray tracing'
+2026-09-10T12:10:28+00:00 vps python3[844803]: [!] Oferta de: OQMDV-PROMO
+2026-09-10T12:10:28+00:00 vps python3[844803]: Texto final:
+2026-09-10T12:10:28+00:00 vps python3[844803]: Placa de Vídeo GALAX - GeForce RTX 3080 Serious Gaming, 10GB, LHR, RGB, DLSS, Ray Tracing
+2026-09-10T12:10:28+00:00 vps python3[844803]: 💰 POR: 3661
+2026-09-10T12:10:28+00:00 vps python3[844803]: https://www.amazon.com.br/Placa-V%C3%ADdeo-GALAX-GeForce-Serious/dp/B09BB3DM7M?ref_=as_li_ss_tl&ascsubtag=srctok-6332bf8bb27e13ef&btn_type=ss&btn_ref=srctok-6332bf8bb27e13ef&tag=brocolis-20
+2026-09-10T12:10:28+00:00 vps python3[844803]: [✓] Postado com imagem no canal!
+2026-09-10T12:10:28+00:00 vps python3[844803]: [✓] Postado com imagem no canal!
+2026-10-09T12:00:25+00:00 vps python3[1132395]: [filtro] ✅ Dentro do nicho
+2026-10-09T12:00:25+00:00 vps python3[1132395]: [cache] Título normalizado: 'novo cupom mercado livre'
+2026-10-09T12:00:25+00:00 vps python3[1132395]: [cache] MISS — novo produto: 'novo cupom mercado livre'
+2026-10-09T12:00:25+00:00 vps python3[1132395]: [⏳] Processando link recebido: https://mercadolivre.com/sec/1qrUweQ
+2026-10-09T12:00:26+00:00 vps python3[1132395]: [🔎] Produto em destaque extraído da vitrine: https://produto.mercadolivre.com.br/MLB-4001346826-par-manivela-preta-vidro-gol-saveiro-g2-g3-g4-g5-g6-polo-fox-preto-_JM
+2026-10-09T12:00:26+00:00 vps python3[1132395]: [📤] URL enviada à API: https://produto.mercadolivre.com.br/MLB-4001346826-par-manivela-preta-vidro-gol-saveiro-g2-g3-g4-g5-g6-polo-fox-preto-_JM?offer_type=BEST_PRICE
+2026-10-09T12:00:26+00:00 vps python3[1132395]: [X] Erro API ML: 400 - {"error":{"origin_url":"https://produto.mercadolivre.com.br/MLB-4001346826-par-manivela-preta-vidro-gol-saveiro-g2-g3-g4-g5-g6-polo-fox-preto-_JM?offer_type=BEST_PRICE","message":"The article must be
+2026-10-09T12:00:26+00:00 vps python3[1132395]: [!] Falha ao converter o link da plataforma: https://mercadolivre.com/sec/1qrUweQ
+2026-10-09T12:00:26+00:00 vps python3[1132395]: [!] Nenhum link convertido — mensagem ignorada (OQMDV-PROMO)
+2026-10-09T12:01:27+00:00 vps python3[1132395]: [filtro] ✅ Dentro do nicho
+2026-10-09T12:01:27+00:00 vps python3[1132395]: [cache] Título normalizado: 'novo cupom mercado livre'
+2026-10-09T12:01:27+00:00 vps python3[1132395]: [cache] MISS — novo produto: 'novo cupom mercado livre'
+2026-10-09T12:01:27+00:00 vps python3[1132395]: [⏳] Processando link recebido: https://meli.la/19HGz9f
+2026-10-09T12:01:28+00:00 vps python3[1132395]: [🔎] Produto em destaque extraído da vitrine: https://www.mercadolivre.com.br/c/livros-revistas-e-comics
+2026-10-09T12:01:28+00:00 vps python3[1132395]: [📤] URL enviada à API: https://www.mercadolivre.com.br/c/livros-revistas-e-comics?offer_type=BEST_PRICE
+2026-10-09T12:01:29+00:00 vps python3[1132395]: [X] Erro API ML: 400 - {"error":{"origin_url":"https://www.mercadolivre.com.br/c/livros-revistas-e-comics?offer_type=BEST_PRICE","message":"The type must be ITEM, PRODUCT or USER_PRODUCT, type: CATEGORY","error_code":1001}}
+2026-10-09T12:01:29+00:00 vps python3[1132395]: [!] Falha ao converter o link da plataforma: https://meli.la/19HGz9f
+2026-10-09T12:01:29+00:00 vps python3[1132395]: [!] Nenhum link convertido — mensagem ignorada (Poison indicações e promoções)
+2026-10-09T12:02:52+00:00 vps python3[1132395]: [filtro] ✅ Dentro do nicho
+2026-10-09T12:02:52+00:00 vps python3[1132395]: [cache] Título normalizado: 'notebook positivo vision r15m'
+2026-10-09T12:02:52+00:00 vps python3[1132395]: [cache] MISS — novo produto: 'notebook positivo vision r15m'
+2026-10-09T12:02:52+00:00 vps python3[1132395]: [⏳] Processando link recebido: https://meli.la/1L8UHn9
+2026-10-09T12:02:53+00:00 vps python3[1132395]: [🔎] Produto em destaque extraído da vitrine: https://www.mercadolivre.com.br/notebook-positivo-vision-r15m-amd-ryzen-5-5625u-linux-8gb-ram-256gb-ssd-wi-fi-6-tela-15-full-hd-ips-antirreflexo-minitela-154-lumina-bar-com-3-niveis-permite-upgrade-de-memoria-ram-e-ssd-preto/p/MLB53471779
+2026-10-09T12:02:53+00:00 vps python3[1132395]: [📤] URL enviada à API: https://www.mercadolivre.com.br/notebook-positivo-vision-r15m-amd-ryzen-5-5625u-linux-8gb-ram-256gb-ssd-wi-fi-6-tela-15-full-hd-ips-antirreflexo-minitela-154-lumina-bar-com-3-niveis-permite-upgrade-de-memoria-ram-e-ssd-preto/p/MLB53471779?offer_type=BEST_PRICE
+2026-10-09T12:02:53+00:00 vps python3[1132395]: [✓] Link de afiliado gerado: https://meli.la/31PpTyx
+2026-10-09T12:02:54+00:00 vps python3[1132395]: [!] Oferta de: Poison indicações e promoções
+2026-10-09T12:02:54+00:00 vps python3[1132395]: Texto final:
+2026-10-09T12:02:54+00:00 vps python3[1132395]: Notebook Positivo Vision R15M
+2026-10-09T12:02:54+00:00 vps python3[1132395]: - Ryzen 5 5625U
+2026-10-09T12:02:54+00:00 vps python3[1132395]: - Painel IPS
+2026-10-09T12:02:54+00:00 vps python3[1132395]: - 8gb RAM (EXPANSÍVEL ATÉ 64GB)
+2026-10-09T12:02:54+00:00 vps python3[1132395]: - 256gb (EXPANSÍVEL)
+2026-10-09T12:02:54+00:00 vps python3[1132395]: 💵 R$ 2640 no pix
+2026-10-09T12:02:54+00:00 vps python3[1132395]: 🎟 Cupom: BOLSOCHEIO
+2026-10-09T12:02:54+00:00 vps python3[1132395]: 🔗 LINK: https://meli.la/31PpTyx
+2026-10-09T12:02:54+00:00 vps python3[1132395]: (ANUNCIO)
+2026-10-09T12:02:54+00:00 vps python3[1132395]: 🏆Amazon prime (30 dias grátis)
+2026-10-09T12:02:54+00:00 vps python3[1132395]: https://www.amazon.com.br/prime?primeCampaignId=prime_assoc_ft&ref_=as_li_ss_tl&tag=brocolis-20
+2026-10-09T12:02:56+00:00 vps python3[1132395]: [✓] Postado com imagem no canal!
+2026-10-09T12:04:21+00:00 vps python3[1132395]: [filtro] ✅ Dentro do nicho
+2026-10-09T12:04:21+00:00 vps python3[1132395]: [cache] Título normalizado: 'monitor gamer tcl 25 polegadas qdmini led full hd g64 300hz 1ms gtg freesync hdr 600 nits 25g64'
+2026-10-09T12:04:21+00:00 vps python3[1132395]: [cache] MISS — novo produto: 'monitor gamer tcl 25 polegadas qdmini led full hd g64 300hz 1ms gtg freesync hdr 600 nits 25g64'
+2026-10-09T12:04:21+00:00 vps python3[1132395]: [⏳] Processando link recebido: https://meli.la/2Sqcmun
+2026-10-09T12:04:22+00:00 vps python3[1132395]: [🔎] Produto em destaque extraído da vitrine: https://www.mercadolivre.com.br/monitor-gamer-tcl-25-polegadas-qd-mini-led-full-hd-g64-300hz-1ms-gtg-freesync-hdr-600-nits-25g64/p/MLB52170796
+2026-10-09T12:04:22+00:00 vps python3[1132395]: [📤] URL enviada à API: https://www.mercadolivre.com.br/monitor-gamer-tcl-25-polegadas-qd-mini-led-full-hd-g64-300hz-1ms-gtg-freesync-hdr-600-nits-25g64/p/MLB52170796?offer_type=BEST_PRICE
+2026-10-09T12:04:22+00:00 vps python3[1132395]: [✓] Link de afiliado gerado: https://meli.la/1w1X5XM
+2026-10-09T12:04:22+00:00 vps python3[1132395]: [!] Oferta de: OQMDV-PROMO
+2026-10-09T12:04:22+00:00 vps python3[1132395]: Texto final:
+2026-10-09T12:04:22+00:00 vps python3[1132395]: Monitor Gamer Tcl 25 Polegadas Qd-Mini Led Full Hd G64 300hz 1ms (Gtg) Freesync Hdr 600 Nits 25g64
+2026-10-09T12:04:22+00:00 vps python3[1132395]: 💰POR: R$ 1166
+2026-10-09T12:04:22+00:00 vps python3[1132395]: 🔖 Cupom: CELULAR0910
+2026-10-09T12:04:22+00:00 vps python3[1132395]: LINK: https://meli.la/1w1X5XM
+2026-10-09T12:04:22+00:00 vps python3[1132395]: ANUNCIO
+2026-10-09T12:04:24+00:00 vps python3[1132395]: [✓] Postado com imagem no canal!
+2026-10-09T12:04:52+00:00 vps python3[1132395]: [filtro] ✅ Dentro do nicho
+2026-10-09T12:04:52+00:00 vps python3[1132395]: [cache] Título normalizado: 'processador amd ryzen 5 7600x3d 47ghz 56ghz turbo cache 96mb am5 6 cores 12 threads vídeo integrado wof 100100001721wof'
+2026-10-09T12:04:52+00:00 vps python3[1132395]: [cache] MISS — novo produto: 'processador amd ryzen 5 7600x3d 47ghz 56ghz turbo cache 96mb am5 6 cores 12 threads vídeo integrado wof 100100001721wof'
+2026-10-09T12:04:52+00:00 vps python3[1132395]: [~] Link encurtado/terceiro detectado, extraindo URL original...
+2026-10-09T12:04:53+00:00 vps python3[1132395]: [→] Expandida: https://www.kabum.com.br/produto/1048336/processador-amd-ryzen-5-7600x3d-4-7ghz-5-6ghz-turbo-cache-96mb-am5-6-cores-12-threads-video-integrado-wof-100-100001721wof?aw_affid=2629514&sv1=affiliate&sv_campaign_id=2629514&awc=17729_1791547493_cab9ad389a26691dcdd8949915189f16&utm_source=AWIN&utm_medium=AFILIADOS&utm_content=B&utm_term=2629514&sv1=affiliate&sv_campaign_id=2629514
+2026-10-09T12:04:53+00:00 vps python3[1132395]: [✓] URL limpa: https://www.kabum.com.br/produto/1048336/processador-amd-ryzen-5-7600x3d-4-7ghz-5-6ghz-turbo-cache-96mb-am5-6-cores-12-threads-video-integrado-wof-100-100001721wof
+2026-10-09T12:04:53+00:00 vps python3[1132395]: [✓] URL limpa para Awin: https://www.kabum.com.br/produto/1048336/processador-amd-ryzen-5-7600x3d-4-7ghz-5-6ghz-turbo-cache-96mb-am5-6-cores-12-threads-video-integrado-wof-100-100001721wof
+2026-10-09T12:04:54+00:00 vps python3[1132395]: Resposta Awin: {'url': 'https://www.awin1.com/cread.php?awinmid=17729&awinaffid=2861353&ued=https%3A%2F%2Fwww.kabum.com.br%2Fproduto%2F1048336%2Fprocessador-amd-ryzen-5-7600x3d-4-7ghz-5-6ghz-turbo-cache-96mb-am5-6-cores-12-threads-video-integrado-wof-100-100001721wof&platform=pl', 'shortUrl': 'https://tidd.ly/4ydoEQV'}
+2026-10-09T12:04:54+00:00 vps python3[1132395]: [!] Oferta de: OQMDV-PROMO
+2026-10-09T12:04:54+00:00 vps python3[1132395]: Texto final:
+2026-10-09T12:04:54+00:00 vps python3[1132395]: Processador AMD Ryzen 5 7600X3D, 4.7GHz (5.6GHz Turbo), Cache 96MB, AM5, 6 Cores, 12 Threads, Vídeo Integrado, WOF 100-100001721WOF
+2026-10-09T12:04:54+00:00 vps python3[1132395]: 💰POR: R$ 1601
+2026-10-09T12:04:54+00:00 vps python3[1132395]: 🔖 Cupom: CPUPROMO
+2026-10-09T12:04:54+00:00 vps python3[1132395]: LINK: https://tidd.ly/4ydoEQV
+2026-10-09T12:04:54+00:00 vps python3[1132395]: ANUNCIO
+2026-10-09T12:04:57+00:00 vps python3[1132395]: [✓] Postado com imagem no canal!
+2026-10-09T12:05:47+00:00 vps python3[1132395]: [filtro] ✅ Dentro do nicho
+2026-10-09T12:05:47+00:00 vps python3[1132395]: [cache] Título normalizado: 'placa de vídeo asrock radeon rx 7600 8gb challenger oc gddr6 hdmi 21'
+2026-10-09T12:05:47+00:00 vps python3[1132395]: [cache] MISS — novo produto: 'placa de vídeo asrock radeon rx 7600 8gb challenger oc gddr6 hdmi 21'
+2026-10-09T12:05:47+00:00 vps python3[1132395]: [⏳] Processando link recebido: https://meli.la/2ySUmu6
+2026-10-09T12:05:48+00:00 vps python3[1132395]: [🔎] Produto em destaque extraído da vitrine: https://www.mercadolivre.com.br/placa-de-video-asrock-radeon-rx-7600-8gb-challenger-oc-gddr6-hdmi-21/p/MLB26915018
+2026-10-09T12:05:48+00:00 vps python3[1132395]: [📤] URL enviada à API: https://www.mercadolivre.com.br/placa-de-video-asrock-radeon-rx-7600-8gb-challenger-oc-gddr6-hdmi-21/p/MLB26915018?offer_type=BEST_PRICE
+2026-10-09T12:05:48+00:00 vps python3[1132395]: [✓] Link de afiliado gerado: https://meli.la/1mYgCED
+2026-10-09T12:05:48+00:00 vps python3[1132395]: [!] Oferta de: OQMDV-PROMO
+2026-10-09T12:05:48+00:00 vps python3[1132395]: Texto final:
+2026-10-09T12:05:48+00:00 vps python3[1132395]: Placa de Vídeo ASRock Radeon RX 7600 8GB Challenger OC GDDR6 HDMI 2.1
+2026-10-09T12:05:48+00:00 vps python3[1132395]: POR: 1799
+2026-10-09T12:05:48+00:00 vps python3[1132395]: CUPOM: CELULAR0910
+2026-10-09T12:05:48+00:00 vps python3[1132395]: https://meli.la/1mYgCED
+2026-10-09T12:05:51+00:00 vps python3[1132395]: [✓] Postado com imagem no canal!
+2026-10-09T12:06:33+00:00 vps python3[1132395]: [filtro] ❌ Rejeitado — 'tv'
+2026-10-09T12:06:33+00:00 vps python3[1132395]: [filtro] Fora do nicho — ignorado (OQMDV-PROMO)

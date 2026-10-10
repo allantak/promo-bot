@@ -409,3 +409,102 @@ class TestAlertaExpiracao:
         observable.converter_link_meli("https://meli.la/x")
 
         assert enviados == []
+
+
+# ----------------------------------------------------------------------
+# Coleta das URLs de produto resolvidas na conversão (histórico de preços)
+# ----------------------------------------------------------------------
+class TestColetaDeUrlsDoProduto:
+    def _coletar(self, funcao, *args):
+        observable._coleta.urls = []
+        try:
+            funcao(*args)
+            return list(observable._coleta.urls)
+        finally:
+            observable._coleta.urls = None
+
+    def test_meli_anota_o_produto_da_vitrine(self, monkeypatch, fake_response):
+        vitrine = '<a href="https://www.mercadolivre.com.br/produto-x/p/MLB16268160#card-featured">ver</a>'
+        monkeypatch.setattr(observable.requests, "get", lambda *a, **k: fake_response(
+            url="https://www.mercadolivre.com.br/social/ao2025", text=vitrine))
+        monkeypatch.setattr(observable.requests, "post", lambda *a, **k: fake_response(
+            status_code=403, text="sessão vencida"))     # mesmo com o ML fora, o produto foi achado
+        monkeypatch.setattr(observable, "enviar_alerta_expiracao", lambda status: None)
+        urls = self._coletar(observable.converter_link_meli, "https://meli.la/x")
+        assert urls == ["https://www.mercadolivre.com.br/produto-x/p/MLB16268160"]
+
+    def test_kabum_anota_a_url_limpa(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable.requests, "get", lambda *a, **k: fake_response(
+            url="https://www.kabum.com.br/produto/9/ssd?utm_source=awin"))
+        monkeypatch.setattr(observable.requests, "post", lambda *a, **k: fake_response(
+            json_data={"shortUrl": "https://tidd.ly/final"}))
+        urls = self._coletar(observable.converter_link_kabum, "https://tidd.ly/encurtado")
+        assert urls and "kabum.com.br/produto/9" in urls[0]
+
+    def test_amazon_anota_o_destino_do_link_curto(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable.requests, "get", lambda *a, **k: fake_response(
+            url="https://www.amazon.com.br/dp/B0EXPANDIDO"))
+        urls = self._coletar(observable.converter_link_amazon, "https://amzn.to/abc")
+        assert urls == ["https://www.amazon.com.br/dp/B0EXPANDIDO"]
+
+    def test_expandir_link_curto_anota_o_destino(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable.requests, "get", lambda *a, **k: fake_response(
+            url="https://www.kabum.com.br/produto/1003399/notebook"))
+        urls = self._coletar(observable.expandir_link_curto, "https://aoferta.net/003AQ04L-Kabum")
+        assert urls == ["https://www.kabum.com.br/produto/1003399/notebook"]
+
+    def test_fora_de_uma_coleta_nao_faz_nada(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable.requests, "get", lambda *a, **k: fake_response(
+            url="https://www.amazon.com.br/dp/B0EXPANDIDO"))
+        observable.converter_link_amazon("https://amzn.to/abc")      # não quebra sem coleta aberta
+        assert getattr(observable._coleta, "urls", None) is None
+
+
+class TestResolverDestino:
+    def test_le_so_o_location_sem_seguir_o_redirect(self, monkeypatch, fake_response):
+        chamadas = []
+
+        def fake_get(url, **kw):
+            chamadas.append(kw)
+            return fake_response(status_code=301, headers={
+                "Location": "https://shopee.com.br/Suporte-Zinnia-i.627750190.19998132816?gads=x"})
+        monkeypatch.setattr(observable.requests, "get", fake_get)
+
+        destino = observable.resolver_destino("https://s.shopee.com.br/5LCYtiIXOL")
+        assert destino.startswith("https://shopee.com.br/Suporte-Zinnia-i.627750190.19998132816")
+        assert chamadas[0]["allow_redirects"] is False and chamadas[0].get("timeout")
+
+        observable.resolver_destino("https://s.shopee.com.br/5LCYtiIXOL")
+        assert len(chamadas) == 1                    # o 2º vem do cache
+
+    def test_location_relativo(self, monkeypatch, fake_response):
+        monkeypatch.setattr(observable.requests, "get", lambda *a, **k: fake_response(
+            status_code=302, headers={"Location": "/item/1005001234567890.html"}))
+        assert observable.resolver_destino("https://pt.aliexpress.com/e/_x") == \
+            "https://pt.aliexpress.com/item/1005001234567890.html"
+
+    def test_erro_de_rede_devolve_none(self, monkeypatch):
+        def boom(*a, **k):
+            raise ConnectionError("caiu")
+        monkeypatch.setattr(observable.requests, "get", boom)
+        assert observable.resolver_destino("https://s.shopee.com.br/x") is None
+
+    def test_post_sem_preco_nao_resolve_nada(self, monkeypatch):
+        def proibido(*a, **k):
+            raise AssertionError("não deveria abrir o link")
+        monkeypatch.setattr(observable.requests, "get", proibido)
+        texto = "NOVO CUPOM SHOPEE\n🔴 R$20 OFF em R$60\n🔴 RESGATE AQUI: https://s.shopee.com.br/LnqBabkcO"
+        assert observable.avaliar_preco_do_post(texto, texto, []) is None
+
+    def test_post_da_shopee_vira_chave_pelo_redirect(self, monkeypatch, fake_response):
+        destinos = {
+            "https://s.shopee.com.br/cupons": "https://shopee.com.br/m/cupom-de-desconto?mmp_pid=x",
+            "https://s.shopee.com.br/produto": "https://shopee.com.br/Suporte-Articulado-Zinnia-Nimbo-i.627750190.1999",
+        }
+        monkeypatch.setattr(observable.requests, "get", lambda url, **k: fake_response(
+            status_code=301, headers={"Location": destinos[url]}))
+        texto = ("Suporte Articulado Para 2 Monitores Zinnia Nimbo 210\n💵 R$ 199,90\n"
+                 "🏷️ Resgate todos os cupons: https://s.shopee.com.br/cupons\nLINK https://s.shopee.com.br/produto")
+        avaliacao = observable.avaliar_preco_do_post(texto, texto, [])
+        assert avaliacao.chave == "shopee:627750190.1999"
+        assert avaliacao.centavos == 19990
