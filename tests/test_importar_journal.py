@@ -143,11 +143,77 @@ class TestEnviarAoAdmin:
         enviados = ij.enviar_exemplos_ao_admin([(post, av, hp.texto_comentario(av))], 5, "TOKEN", "111", espera=0)
 
         assert enviados == 1
-        assert [m for m, _ in chamadas] == ["sendMessage", "setMessageReaction", "sendMessage"]
-        assert "Exemplo real do histórico (09/10/2026)" in chamadas[0][1]["text"]
-        assert chamadas[1][1]["reaction"] == [{"type": "emoji", "emoji": hp.reacao(av)}]
-        assert chamadas[2][1]["reply_parameters"] == {"message_id": 77}
-        assert hp.OBSERVACAO in chamadas[2][1]["text"]
+        # Sem grupo de discussão (getChat sem linked_chat_id): responde ao post.
+        assert [m for m, _ in chamadas] == ["getChat", "sendMessage", "setMessageReaction", "sendMessage"]
+        assert "Exemplo real do histórico (09/10/2026)" in chamadas[1][1]["text"]
+        assert chamadas[2][1]["reaction"] == [{"type": "emoji", "emoji": hp.reacao(av)}]
+        assert chamadas[3][1]["reply_parameters"] == {"message_id": 77}
+        assert hp.OBSERVACAO in chamadas[3][1]["text"]
+
+    def test_com_discussao_comenta_no_leave_a_comment(self, monkeypatch, fake_response):
+        # Canal com grupo de discussão (como o canal principal): o comentário
+        # responde à cópia que o Telegram põe no grupo. O id da cópia sai da
+        # ordem das mensagens (sonda) e é conferido pelo reencaminhamento.
+        import requests
+        canal, grupo = -100111, -1003545430703
+        chamadas = []
+
+        def fake_post(url, json=None, timeout=None):
+            metodo = url.rsplit("/", 1)[1]
+            chamadas.append((metodo, json))
+            if metodo == "getChat":
+                resultado = {"id": canal, "linked_chat_id": grupo}
+            elif metodo == "getMe":
+                resultado = {"id": 8632432686}
+            elif metodo == "getChatMember":
+                resultado = {"status": "administrator"}
+            elif metodo == "sendMessage":
+                if str(json["chat_id"]) == str(canal):
+                    resultado = {"message_id": 77}                    # o post no canal
+                else:
+                    resultado = {"message_id": 502 if json["text"] == "⏳" else 503}
+            elif metodo == "forwardMessage":
+                if json["message_id"] != 501:
+                    return fake_response(status_code=400, text="message to forward not found")
+                resultado = {"message_id": 504,
+                             "forward_origin": {"type": "channel", "chat": {"id": canal}, "message_id": 77}}
+            else:
+                resultado = True
+            return fake_response(status_code=200, json_data={"result": resultado})
+        monkeypatch.setattr(requests, "post", fake_post)
+
+        av = hp.classificar("kabum:1", 160100, "2026-10", {"2026-09": (3, 534700, 174900, 179900)})
+        post = ij.PostDoJournal(datetime(2026, 10, 9, 15, tzinfo=timezone.utc), "Ryzen\nPOR: R$ 1601", [])
+        enviados = ij.enviar_exemplos_ao_admin([(post, av, hp.texto_comentario(av))], 5, "TOKEN", str(canal),
+                                               espera=0, espera_copia=0)
+
+        assert enviados == 1
+        comentario = chamadas[-1][1]
+        assert comentario["chat_id"] == grupo                                 # na discussão...
+        assert comentario["reply_parameters"] == {"message_id": 501}          # ...respondendo à cópia do post
+        apagadas = [p["message_id"] for m, p in chamadas if m == "deleteMessage"]
+        assert apagadas == [502, 504]                                         # sonda e conferência somem
+
+    def test_bot_fora_do_grupo_responde_no_canal(self, monkeypatch, fake_response):
+        import requests
+        chamadas = []
+
+        def fake_post(url, json=None, timeout=None):
+            metodo = url.rsplit("/", 1)[1]
+            chamadas.append((metodo, json))
+            if metodo == "getChat":
+                return fake_response(json_data={"result": {"id": -100111, "linked_chat_id": -100999}})
+            if metodo == "getChatMember":
+                return fake_response(status_code=403, text="bot is not a member of the supergroup chat")
+            return fake_response(json_data={"result": {"message_id": 77, "id": 1}})
+        monkeypatch.setattr(requests, "post", fake_post)
+
+        av = hp.classificar("kabum:1", 160100, "2026-10", {"2026-09": (3, 534700, 174900, 179900)})
+        post = ij.PostDoJournal(datetime(2026, 10, 9, 15, tzinfo=timezone.utc), "Ryzen\nPOR: R$ 1601", [])
+        ij.enviar_exemplos_ao_admin([(post, av, hp.texto_comentario(av))], 5, "TOKEN", "-100111", espera=0)
+
+        comentario = chamadas[-1][1]
+        assert comentario["chat_id"] == "-100111" and comentario["reply_parameters"] == {"message_id": 77}
 
     def test_le_credenciais_do_env_sem_executar(self, tmp_path, monkeypatch):
         monkeypatch.delenv("BOT_TOKEN", raising=False)

@@ -147,14 +147,40 @@ def ler_credenciais(caminho_env):
     return valores['BOT_TOKEN'], valores['TELEGRAM_ADMIN_ID']
 
 
-def enviar_exemplos_ao_admin(comentarios, quantidade, token, chat_id, espera=1.0):
+def _achar_copia_na_discussao(chamar, grupo_id, canal_id, message_id, espera=3.0):
+    """O Telegram copia cada post do canal para o grupo de discussão, e o
+    comentário ("Leave a comment") é uma resposta a essa cópia. Como membro
+    comum (modo privacidade), o bot não recebe a cópia; então descobre o id
+    dela pela ordem das mensagens: manda uma sonda silenciosa (apagada na
+    hora) e confere as mensagens logo antes dela reencaminhando-as (a
+    reencaminhada diz de qual post do canal veio e também é apagada)."""
+    time.sleep(espera)                     # tempo do Telegram copiar o post para o grupo
+    sonda = chamar('sendMessage', {'chat_id': grupo_id, 'text': '⏳', 'disable_notification': True})
+    if not isinstance(sonda, dict):
+        return None
+    chamar('deleteMessage', {'chat_id': grupo_id, 'message_id': sonda['message_id']})
+    for candidato in range(sonda['message_id'] - 1, sonda['message_id'] - 4, -1):
+        conferida = chamar('forwardMessage', {'chat_id': grupo_id, 'from_chat_id': grupo_id,
+                                              'message_id': candidato, 'disable_notification': True})
+        if not isinstance(conferida, dict):
+            continue
+        chamar('deleteMessage', {'chat_id': grupo_id, 'message_id': conferida['message_id']})
+        origem = conferida.get('forward_origin') or {}
+        if origem.get('message_id') == message_id and (origem.get('chat') or {}).get('id') == canal_id:
+            return candidato
+    return None
+
+
+def enviar_exemplos_ao_admin(comentarios, quantidade, token, chat_id, espera=1.0, espera_copia=3.0):
     """Manda ao chat do admin os exemplos mais recentes como vão aparecer:
-    o texto do post, a reação e o comentário respondendo a ele."""
+    o texto do post, a reação e o comentário. Se o chat do admin for um canal
+    com grupo de discussão, o comentário vai na thread do post (como no canal
+    principal); senão, como resposta ao post."""
     import requests
 
-    def chamar(metodo, payload):
+    def chamar(metodo, payload, timeout=15):
         try:
-            resposta = requests.post(f'https://api.telegram.org/bot{token}/{metodo}', json=payload, timeout=15)
+            resposta = requests.post(f'https://api.telegram.org/bot{token}/{metodo}', json=payload, timeout=timeout)
         except Exception as e:
             print(f'[X] {metodo}: {e!r}')
             return None
@@ -162,6 +188,16 @@ def enviar_exemplos_ao_admin(comentarios, quantidade, token, chat_id, espera=1.0
             print(f'[X] {metodo}: {resposta.status_code} - {resposta.text[:200]}')
             return None
         return resposta.json().get('result')
+
+    canal = chamar('getChat', {'chat_id': chat_id}) or {}
+    grupo_id = canal.get('linked_chat_id')
+    if grupo_id:
+        eu = chamar('getMe', {}) or {}
+        membro = chamar('getChatMember', {'chat_id': grupo_id, 'user_id': eu.get('id')}) or {}
+        if membro.get('status') not in ('creator', 'administrator', 'member'):
+            print('[!] O bot não está no grupo de discussão do chat do admin: '
+                  'o comentário vai como resposta ao post.')
+            grupo_id = None
 
     enviados = 0
     for post, avaliacao, comentario in comentarios[-quantidade:]:
@@ -177,9 +213,17 @@ def enviar_exemplos_ao_admin(comentarios, quantidade, token, chat_id, espera=1.0
             'chat_id': chat_id, 'message_id': message_id,
             'reaction': [{'type': 'emoji', 'emoji': hp.reacao(avaliacao)}],
         })
+        destino, responder_a = chat_id, message_id
+        if grupo_id:
+            copia_id = _achar_copia_na_discussao(chamar, grupo_id, canal.get('id'), message_id, espera_copia)
+            if copia_id:
+                destino, responder_a = grupo_id, copia_id
+            else:
+                print('[!] Não achei a cópia do post no grupo de discussão: '
+                      'o comentário vai como resposta no canal.')
         if chamar('sendMessage', {
-            'chat_id': chat_id, 'text': comentario, 'parse_mode': 'HTML',
-            'reply_parameters': {'message_id': message_id},
+            'chat_id': destino, 'text': comentario, 'parse_mode': 'HTML',
+            'reply_parameters': {'message_id': responder_a},
             'link_preview_options': {'is_disabled': True},
         }) is not None:
             enviados += 1

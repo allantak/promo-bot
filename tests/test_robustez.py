@@ -458,10 +458,11 @@ def _semear_mes_passado(precos, chave="kabum:1048336"):
 class _BotApiFalsa:
     """requests.post falso que responde como a Bot API e guarda as chamadas."""
 
-    def __init__(self, monkeypatch, fake_response, falhar=()):
+    def __init__(self, monkeypatch, fake_response, falhar=(), resultados=None):
         self.chamadas = []
         self.fake_response = fake_response
         self.falhar = set(falhar)
+        self.resultados = resultados or {}
         monkeypatch.setattr(observable.requests, "post", self.post)
 
     def post(self, url, json=None, **kw):
@@ -469,7 +470,8 @@ class _BotApiFalsa:
         self.chamadas.append((metodo, json))
         if metodo in self.falhar:
             return self.fake_response(status_code=400, text='{"description":"REACTION_INVALID"}')
-        return self.fake_response(status_code=200, json_data={"ok": True, "result": {"message_id": 900}})
+        resultado = self.resultados.get(metodo, {"message_id": 900})
+        return self.fake_response(status_code=200, json_data={"ok": True, "result": resultado})
 
     def metodos(self):
         return [m for m, _ in self.chamadas]
@@ -544,13 +546,32 @@ class TestComentarioDePreco:
         publicados = self._processar(monkeypatch)
 
         assert len(publicados) == 1                          # o post sai normal no canal
-        assert api.metodos() == ["copyMessage", "setMessageReaction", "sendMessage"]
-        copia, reacao, comentario = (payload for _, payload in api.chamadas)
+        # Chat do admin sem grupo de discussão: o comentário vai como resposta à cópia.
+        assert api.metodos() == ["copyMessage", "setMessageReaction", "getChat", "sendMessage"]
+        copia, reacao, _, comentario = (payload for _, payload in api.chamadas)
         assert copia == {"chat_id": "111", "from_chat_id": observable.MEU_CANAL_ID, "message_id": 555}
         assert reacao["message_id"] == 900 and reacao["reaction"] == [{"type": "emoji", "emoji": "🔥"}]
         assert comentario["reply_parameters"] == {"message_id": 900}
         assert comentario["text"].startswith("🔥 <b>Preço excelente!</b>")
         assert historico_precos.OBSERVACAO in comentario["text"]
+
+    def test_modo_teste_comenta_na_discussao_do_admin(self, monkeypatch, fake_response):
+        # ADMIN LOG com grupo de discussão (como o canal principal): o
+        # comentário vai na thread da cópia, assinado pelo próprio ADMIN LOG,
+        # pelo mesmo caminho que o canal principal usa no modo "ligado".
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "teste")
+        _semear_mes_passado([1599, 1599])
+        api = _BotApiFalsa(monkeypatch, fake_response,
+                           resultados={"getChat": {"id": 111, "linked_chat_id": -100777}})
+        canal, enviados = self._telethon_falso(monkeypatch)
+
+        self._processar(monkeypatch)
+
+        assert api.metodos() == ["copyMessage", "setMessageReaction", "getChat"]
+        entidade, texto, kw = enviados[0]
+        assert entidade is canal and kw["send_as"] is canal
+        assert kw["comment_to"] == 900                       # a cópia no ADMIN LOG, não o post do canal
+        assert texto.startswith("✅ <b>Bom momento pra comprar!</b>")
 
     def test_modo_ligado_reage_e_comenta_como_o_canal(self, monkeypatch, fake_response):
         monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
@@ -717,4 +738,4 @@ class TestComentarioDePreco:
                 yield dialogo
         monkeypatch.setattr(observable.client, "get_input_entity", get_input_entity)
         monkeypatch.setattr(observable.client, "iter_dialogs", iter_dialogs)
-        assert asyncio.run(observable._entidade_do_meu_canal()) is alvo
+        assert asyncio.run(observable._entidade(observable.MEU_CANAL_ID)) is alvo

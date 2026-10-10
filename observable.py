@@ -1318,7 +1318,8 @@ def enviar_para_meu_bot(texto):
 # (o bot que já posta no canal). A conta do Telethon é a mesma que escuta os
 # canais de origem: limite por hora e suspensão automática em erro de
 # permissão/flood, para um problema aqui nunca custar a escuta.
-_entidade_canal = None
+_entidades = {}                 # chat_id -> InputPeer (canal principal e ADMIN LOG)
+_discussao_do_admin = None      # o chat do admin é um canal com grupo de discussão? (None = não sei)
 _comentarios_suspensos_ate = 0.0
 _comentarios_recentes = deque()
 _ERROS_PERMISSAO = (
@@ -1351,19 +1352,43 @@ def reagir_ao_post(chat_id, message_id: int, emoji: str) -> bool:
     return resultado is not None
 
 
-def previa_no_admin(message_id: int, emoji: str, comentario: str) -> bool:
-    """Modo teste: copia o post do canal para o chat do admin, reage na cópia e
-    responde a ela com o comentário. O canal não muda nada."""
-    if not ADMIN_CHAT_ID:
-        print("[preço] TELEGRAM_ADMIN_ID não configurado — prévia não enviada.")
-        return False
+def _copiar_para_o_admin(message_id: int, emoji: str):
+    """Copia o post do canal para o chat do admin e reage na cópia. Devolve o
+    id da cópia (None em erro)."""
     copia = _bot_api('copyMessage', {"chat_id": ADMIN_CHAT_ID, "from_chat_id": MEU_CANAL_ID,
                                      "message_id": message_id})
     copia_id = copia.get('message_id') if isinstance(copia, dict) else None
+    if copia_id:
+        reagir_ao_post(ADMIN_CHAT_ID, copia_id, emoji)
+    return copia_id
+
+
+def _admin_tem_discussao() -> bool:
+    """O chat do admin é um canal com grupo de discussão (como o canal
+    principal)? Consultado uma vez; erro de rede não fica guardado."""
+    global _discussao_do_admin
+    if _discussao_do_admin is None:
+        chat = _bot_api('getChat', {"chat_id": ADMIN_CHAT_ID})
+        if not isinstance(chat, dict):
+            return False
+        _discussao_do_admin = bool(chat.get('linked_chat_id'))
+    return _discussao_do_admin
+
+
+async def previa_no_admin(message_id: int, emoji: str, comentario: str) -> bool:
+    """Modo teste: copia o post do canal para o chat do admin, reage na cópia e
+    comenta nela. Se o chat do admin tem grupo de discussão, o comentário vai na
+    thread e assinado pelo próprio chat do admin — o mesmo caminho do canal
+    principal; senão, vai como resposta. O canal principal não muda nada."""
+    if not ADMIN_CHAT_ID:
+        print("[preço] TELEGRAM_ADMIN_ID não configurado — prévia não enviada.")
+        return False
+    copia_id = await asyncio.to_thread(_copiar_para_o_admin, message_id, emoji)
     if not copia_id:
         return False
-    reagir_ao_post(ADMIN_CHAT_ID, copia_id, emoji)
-    enviado = _bot_api('sendMessage', {
+    if await asyncio.to_thread(_admin_tem_discussao):
+        return _pode_comentar() and await comentar_no_post(copia_id, comentario, chat_id=int(ADMIN_CHAT_ID))
+    enviado = await asyncio.to_thread(_bot_api, 'sendMessage', {
         "chat_id": ADMIN_CHAT_ID, "text": comentario, "parse_mode": "HTML",
         "reply_parameters": {"message_id": copia_id},
         "link_preview_options": {"is_disabled": True},
@@ -1371,21 +1396,23 @@ def previa_no_admin(message_id: int, emoji: str, comentario: str) -> bool:
     return enviado is not None
 
 
-async def _entidade_do_meu_canal():
-    """InputPeer do canal de destino. Se a sessão ainda não tiver o canal em
-    cache (sem access hash), percorre os diálogos uma vez para aprender."""
-    global _entidade_canal
-    if _entidade_canal is None:
+async def _entidade(chat_id: int):
+    """InputPeer de um canal. Se a sessão ainda não tiver o canal em cache (sem
+    access hash), percorre os diálogos uma vez para aprender."""
+    if chat_id not in _entidades:
         try:
-            _entidade_canal = await asyncio.wait_for(client.get_input_entity(MEU_CANAL_ID), timeout=30)
+            entidade = await asyncio.wait_for(client.get_input_entity(chat_id), timeout=30)
         except ValueError:
             async def procurar():
                 async for dialogo in client.iter_dialogs():
-                    if dialogo.id == MEU_CANAL_ID:
+                    if dialogo.id == chat_id:
                         return dialogo.input_entity
                 return None
-            _entidade_canal = await asyncio.wait_for(procurar(), timeout=120)
-    return _entidade_canal
+            entidade = await asyncio.wait_for(procurar(), timeout=120)
+        if entidade is None:
+            return None
+        _entidades[chat_id] = entidade
+    return _entidades[chat_id]
 
 
 def _pode_comentar() -> bool:
@@ -1414,12 +1441,12 @@ async def _suspender_comentarios(motivo: str, segundos: int):
     )
 
 
-async def comentar_no_post(message_id: int, texto: str) -> bool:
+async def comentar_no_post(message_id: int, texto: str, chat_id: int = None) -> bool:
     """Comenta no post (grupo de discussão vinculado ao canal), assinando como
     o canal. Nunca comenta como conta pessoal."""
-    canal = await _entidade_do_meu_canal()
+    canal = await _entidade(chat_id or MEU_CANAL_ID)
     if canal is None:
-        await _suspender_comentarios("o canal de destino não aparece nos diálogos da conta", 3600)
+        await _suspender_comentarios(f"o canal {chat_id or MEU_CANAL_ID} não aparece nos diálogos da conta", 3600)
         return False
 
     ultimo_erro = None
@@ -1476,8 +1503,7 @@ async def tratar_comentario_de_preco(avaliacao, message_id):
         if MODO_COMENTARIO_PRECO == 'sombra':
             print(f"[preço] (sombra) comentaria no post {message_id} com {emoji}:\n{comentario}")
         elif MODO_COMENTARIO_PRECO == 'teste':
-            ok = await asyncio.wait_for(
-                asyncio.to_thread(previa_no_admin, message_id, emoji, comentario), timeout=PRAZO_COMENTARIO)
+            ok = await asyncio.wait_for(previa_no_admin(message_id, emoji, comentario), timeout=PRAZO_COMENTARIO)
             print(f"[preço] 🧪 prévia do post {message_id} {'enviada' if ok else 'NÃO enviada'} ao admin")
         elif MODO_COMENTARIO_PRECO == 'ligado' and _pode_comentar():
             if not await asyncio.to_thread(reagir_ao_post, MEU_CANAL_ID, message_id, emoji):

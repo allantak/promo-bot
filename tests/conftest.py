@@ -66,11 +66,13 @@ def historico_isolado(tmp_path, monkeypatch):
     """O histórico de preços vai para uma pasta temporária e o estado dos
     comentários (suspensão, limite por hora, cache de redirects) começa zerado."""
     monkeypatch.setattr(historico_precos, "CAMINHO_BANCO", str(tmp_path / "historico_precos.db"))
-    monkeypatch.setattr(botmod, "_entidade_canal", None)
+    monkeypatch.setattr(botmod, "_discussao_do_admin", None)
     monkeypatch.setattr(botmod, "_comentarios_suspensos_ate", 0.0)
+    botmod._entidades.clear()
     botmod._comentarios_recentes.clear()
     botmod.cache_destinos.clear()
     yield
+    botmod._entidades.clear()
     botmod._comentarios_recentes.clear()
     botmod.cache_destinos.clear()
 
