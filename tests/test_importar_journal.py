@@ -108,6 +108,20 @@ class TestImportar:
         assert avaliacao.status == "bom"
         assert "📉 10% abaixo da média de setembro (R$ 1.782 em 3 promoções)" in comentario
 
+    def test_post_de_hoje_importado_nao_bloqueia_o_comentario_ao_vivo(self):
+        agora = datetime.now(timezone.utc)
+        ano, mes = map(int, hp.mes_anterior(hp.dia_e_mes_brt(agora)[1]).split("-"))
+        linhas = []
+        for dia, preco in ((5, 1799), (12, 1799)):
+            linhas += _post_kabum(datetime(ano, mes, dia, 15, tzinfo=timezone.utc), preco)
+        linhas += _post_kabum(agora - timedelta(seconds=5), 1601)       # hoje, antes do deploy
+        _, comentarios = ij.importar(ij.ler_posts(linhas))
+        assert len(comentarios) == 1
+
+        # O bot no ar vê o mesmo produto pelo mesmo preço: o comentário sai.
+        ao_vivo = hp.registrar_e_avaliar("kabum:1048336", 160100, agora)
+        assert ao_vivo.status == "bom" and ao_vivo.ja_comentado is False
+
     def test_rodar_duas_vezes_conta_igual(self, tmp_path):
         caminho = str(tmp_path / "sim.db")
         ij.importar(_ler_fixture(), caminho=caminho)

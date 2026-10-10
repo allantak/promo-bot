@@ -481,9 +481,11 @@ def _podar(con: sqlite3.Connection, caminho: str, dia: str, mes: str):
 
 
 def registrar_e_avaliar(chave: str, centavos: int, momento: Optional[datetime] = None,
-                        titulo: Optional[str] = None, caminho: Optional[str] = None) -> Avaliacao:
+                        titulo: Optional[str] = None, caminho: Optional[str] = None,
+                        marcar_comentario: bool = True) -> Avaliacao:
     """Avalia a oferta com o histórico de ANTES dela e registra o preço no
-    agregado do mês, tudo numa transação."""
+    agregado do mês, tudo numa transação. `marcar_comentario=False` (importação
+    do histórico) não conta a oferta como "já comentada hoje"."""
     caminho = caminho or CAMINHO_BANCO
     dia, mes = dia_e_mes_brt(momento)
     with closing(_conectar(caminho)) as con:
@@ -509,7 +511,7 @@ def registrar_e_avaliar(chave: str, centavos: int, momento: Optional[datetime] =
             ja_comentado = False
             if avaliacao.status in ('bom', 'excelente'):
                 ja_comentado = produto[2] == dia and centavos >= produto[3]
-                if not ja_comentado:
+                if not ja_comentado and marcar_comentario:
                     con.execute(
                         'INSERT INTO produtos (chave, comentado_dia, comentado_centavos) VALUES (?, ?, ?) '
                         'ON CONFLICT (chave) DO UPDATE SET comentado_dia = excluded.comentado_dia, '
@@ -535,7 +537,8 @@ def registrar_e_avaliar(chave: str, centavos: int, momento: Optional[datetime] =
 
 
 def avaliar_oferta(texto: str, urls: Iterable[str], momento: Optional[datetime] = None, *,
-                   resolver: Optional[Callable[[], list]] = None, caminho: Optional[str] = None):
+                   resolver: Optional[Callable[[], list]] = None, caminho: Optional[str] = None,
+                   marcar_comentario: bool = True):
     """Fluxo completo de uma oferta: preço → produto → registra e avalia.
     `resolver` (opcional) traz URLs extras e só é chamado se houver preço — é
     onde o bot resolve os links curtos de Shopee/AliExpress.
@@ -553,7 +556,8 @@ def avaliar_oferta(texto: str, urls: Iterable[str], momento: Optional[datetime] 
         # Na KaBuM o Pix sai bem mais barato que o parcelado: misturar os dois
         # faria qualquer post com o preço do Pix parecer "abaixo da média".
         return None, 'so_cartao'
-    avaliacao = registrar_e_avaliar(chave, preco.centavos, momento, titulo_do_post(texto), caminho)
+    avaliacao = registrar_e_avaliar(chave, preco.centavos, momento, titulo_do_post(texto), caminho,
+                                    marcar_comentario)
     return avaliacao, 'ok'
 
 

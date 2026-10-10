@@ -89,9 +89,14 @@ def importar(posts, caminho=None):
     e a lista de (post, avaliação, comentário) que teriam saído."""
     estatisticas = Counter()
     comentarios = []
+    hoje = hp.dia_e_mes_brt()[0]
     for post in posts:
         estatisticas['posts'] += 1
-        avaliacao, motivo = hp.avaliar_oferta(post.texto, post.urls, post.momento, caminho=caminho)
+        # Os posts de hoje entram na média, mas não contam como "já comentado
+        # hoje": esses comentários nunca saíram, e o bot ao vivo deve poder comentar.
+        dia = hp.dia_e_mes_brt(post.momento)[0]
+        avaliacao, motivo = hp.avaliar_oferta(post.texto, post.urls, post.momento, caminho=caminho,
+                                              marcar_comentario=dia < hoje)
         estatisticas[f'motivo:{motivo}'] += 1
         if avaliacao is None:
             continue

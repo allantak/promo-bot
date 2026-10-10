@@ -94,12 +94,12 @@ LADO_MAXIMO_IMAGEM = 2560
 
 # --- Termômetro de preço (historico_precos.py): reação + comentário no post ---
 # quando a oferta está abaixo da média das promoções do produto.
-#   desligado: nem registra o histórico
-#   sombra:    registra e só loga o que comentaria
+#   ligado:    reage e comenta no post do canal, assinando como o canal (padrão)
 #   teste:     o canal segue igual; a cópia do post + reação + comentário vão
-#              para o chat do admin, para ver como fica antes de ligar
-#   ligado:    reage e comenta no post do canal, assinando como o canal
-MODO_COMENTARIO_PRECO = (os.getenv('COMENTARIO_PRECO') or 'teste').strip().lower()
+#              para o chat do admin, para ver como fica
+#   sombra:    registra e só loga o que comentaria
+#   desligado: nem registra o histórico
+MODO_COMENTARIO_PRECO = (os.getenv('COMENTARIO_PRECO') or 'ligado').strip().lower()
 # O post leva alguns segundos para chegar ao grupo de discussão do canal.
 ESPERAS_COMENTARIO = (2, 4, 8)
 PRAZO_COMENTARIO = 60
