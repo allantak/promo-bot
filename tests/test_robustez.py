@@ -591,6 +591,38 @@ class TestComentarioDePreco:
         assert texto.startswith("✅ <b>Bom momento pra comprar!</b>")
         assert "📉 6% abaixo da média de" in texto
 
+    def test_anuncio_novo_de_placa_comenta_pela_media_do_modelo(self, monkeypatch, fake_response):
+        # Caso real (15/10): MSI RTX 5060 num /up/ do ML sem histórico próprio,
+        # com outras RTX 5060 no histórico (média R$ 2.632).
+        monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
+        _, mes = historico_precos.dia_e_mes_brt()
+        ano, m = map(int, mes.split("-"))
+        for hora, (chave, reais) in enumerate([("amz:B0GQ17JZFJ", 2609), ("kabum:1", 2645), ("shopee:1.2", 2559),
+                                               ("meli:p:MLB52175612", 2617), ("meli:p:MLB50869989", 2663),
+                                               ("kabum:2", 2699)]):
+            historico_precos.registrar_e_avaliar(chave, reais * 100, datetime(ano, m, 1, 12 + hora, tzinfo=timezone.utc),
+                                                 modelo="RTX 5060")
+        url = ("https://www.mercadolivre.com.br/placa-de-video-msi-rtx-5060-8g-shadow-2x-oc-gddr7-128-bits"
+               "/up/MLBU4899388815")
+
+        def converter(t):
+            observable._anotar_url_produto(url)          # como o converter_link_meli faz
+            return t, True
+        monkeypatch.setattr(observable, "substituir_links_no_texto", converter)
+        monkeypatch.setattr(observable, "publicar", lambda *a: 555)
+        api = _BotApiFalsa(monkeypatch, fake_response)
+        _, enviados = self._telethon_falso(monkeypatch)
+        texto = ("Placa De Vídeo Msi Rtx 5060 8g Shadow 2x Oc Gddr7 128 Bits\n\nPOR: R$2.439,99\n"
+                 "Cupom: RESGATEALLSITE + Cupom da loja\n\nhttps://meli.la/17jqwgq\n\n(anúncio)")
+
+        asyncio.run(observable.processar_promocao(_evento(texto)))
+
+        assert api.chamadas[0][1]["reaction"] == [{"type": "emoji", "emoji": "👍"}]
+        comentario = enviados[0][1]
+        assert comentario.startswith("✅ <b>Bom momento pra comprar!</b>")
+        assert "📉 7% abaixo da média das RTX 5060 de" in comentario
+        assert historico_precos.OBSERVACAO_MODELO.format(modelo="RTX 5060") in comentario
+
     def test_reacao_recusada_nao_impede_o_comentario(self, monkeypatch, fake_response):
         monkeypatch.setattr(observable, "MODO_COMENTARIO_PRECO", "ligado")
         _semear_mes_passado([1599, 1599])

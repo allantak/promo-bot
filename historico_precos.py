@@ -11,6 +11,10 @@ produção (AuthKeyDuplicated). Por isso aqui só entra biblioteca padrão.
 Guarda um AGREGADO por produto por mês (quantidade, soma, menor e maior
 preço), nunca cada post: a média é soma ÷ quantidade, e cada oferta custa uma
 leitura de ≤ 2 linhas e um UPSERT pela chave primária (VPS de 1 GB).
+
+Anúncio sem histórico próprio (um ID novo de uma placa que já apareceu com
+outro) é comparado com a média do MODELO: as placas do mesmo chip, de
+qualquer marca e loja (ver modelo_do_texto).
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import math
 import os
 import re
 import sqlite3
+import statistics
 import sys
 import threading
 import unicodedata
@@ -48,6 +53,16 @@ DESVIO_MAXIMO_REGISTRO = 50   # observação tão fora da referência não entra
 # Referência com maior ÷ menor acima disso é descartada: preços dispersos
 # demais costumam ser variantes diferentes (8 GB × 16 GB) sob o mesmo anúncio.
 DISPERSAO_MAXIMA = 1.6
+# A média do modelo mistura marcas e lojas: só vira referência com mais
+# promoções no mês que a de um anúncio.
+MIN_PROMOCOES_MODELO = 5
+# Um anúncio só entra na média do modelo no mês se todos os seus preços
+# ficarem entre ÷1,5 e ×1,5 da mediana dos anúncios do modelo (barra
+# acessório, kit ou preço mal lido que passou com o nome do modelo).
+FAIXA_MODELO = 1.5
+# Versão da detecção de modelo aplicada ao banco (PRAGMA user_version):
+# subir o número recalcula o modelo de todo produto pelo título guardado.
+VERSAO_MODELOS = 1
 RETENCAO_MESES = 13
 RETENCAO_PRODUTOS_DIAS = 400
 PRECO_MINIMO = 5_00            # R$ 5
@@ -55,6 +70,8 @@ PRECO_MAXIMO = 100_000_00      # R$ 100.000
 
 OBSERVACAO = ("⚠️ Obs.: estimativa feita com as promoções que acompanhamos. "
               "O preço pode variar conforme modelo, cor e versão do produto.")
+OBSERVACAO_MODELO = ("⚠️ Obs.: comparação com as {modelo} de todas as marcas e lojas que acompanhamos. "
+                     "O preço pode variar conforme marca e versão da placa.")
 # Reação no post junto com o comentário (precisam estar liberadas no canal).
 REACAO_BOM = '👍'
 REACAO_EXCELENTE = '🔥'
@@ -303,6 +320,108 @@ def chave_unica(urls: Iterable[str], texto: str):
 
 
 # ============================================================
+# MODELO — o mesmo item vendido em vários anúncios e lojas
+# ============================================================
+# Cada ID de anúncio começa sem histórico, e a mesma placa vive em vários: no
+# ML, o catálogo (/p/) e as páginas de vendedor (/up/) nem sempre se ligam.
+# Caso real (15/10/2026): a MSI RTX 5060 Shadow 2X OC tinha 7 promoções no
+# /p/MLB51032833 e saiu por R$ 2.439,99 num /up/ inédito — sem comentário.
+# A oferta sem histórico próprio é comparada então com a média do MODELO:
+# placas de vídeo do mesmo chip (e da mesma memória, quando o chip sai em
+# mais de uma), de qualquer marca e loja.
+#
+# Chip → memórias (GB) em que é vendido. Chip fora da tabela fica sem modelo;
+# chip com mais de uma memória só tem modelo se o texto disser qual é.
+MEMORIAS_GPU = {
+    'gtx 1650': (4,), 'gtx 1660': (6,), 'gtx 1660 super': (6,), 'gtx 1660 ti': (6,),
+    'rtx 2060': (6, 12), 'rtx 2060 super': (8,),
+    'rtx 3050': (6, 8), 'rtx 3060': (8, 12), 'rtx 3060 ti': (8,), 'rtx 3070': (8,), 'rtx 3070 ti': (8,),
+    'rtx 3080': (10, 12), 'rtx 3080 ti': (12,), 'rtx 3090': (24,), 'rtx 3090 ti': (24,),
+    'rtx 4060': (8,), 'rtx 4060 ti': (8, 16), 'rtx 4070': (12,), 'rtx 4070 super': (12,),
+    'rtx 4070 ti': (12,), 'rtx 4070 ti super': (16,), 'rtx 4080': (16,), 'rtx 4080 super': (16,),
+    'rtx 4090': (24,),
+    'rtx 5050': (8,), 'rtx 5060': (8,), 'rtx 5060 ti': (8, 16), 'rtx 5070': (12,), 'rtx 5070 ti': (16,),
+    'rtx 5080': (16,), 'rtx 5090': (32,),
+    'rx 6400': (4,), 'rx 6500 xt': (4, 8), 'rx 6600': (8,), 'rx 6600 xt': (8,), 'rx 6650 xt': (8,),
+    'rx 6700': (10,), 'rx 6700 xt': (12,), 'rx 6750 xt': (12,), 'rx 6800': (16,), 'rx 6800 xt': (16,),
+    'rx 6900 xt': (16,), 'rx 6950 xt': (16,),
+    'rx 7600': (8,), 'rx 7600 xt': (16,), 'rx 7700 xt': (12,), 'rx 7800 xt': (16,), 'rx 7900 gre': (16,),
+    'rx 7900 xt': (20,), 'rx 7900 xtx': (24,),
+    'rx 9060': (8,), 'rx 9060 xt': (8, 16), 'rx 9070': (16,), 'rx 9070 gre': (12,), 'rx 9070 xt': (16,),
+    'arc a380': (6,), 'arc a580': (8,), 'arc a750': (8,), 'arc a770': (8, 16),
+    'arc b570': (10,), 'arc b580': (12,),
+}
+# Número do chip solto ou colado ao prefixo ("RTX5060TI"), nunca no meio de
+# um código do fabricante ("ZT-B50600H", "NE75060V19", "GV-N5060AERO").
+_CHIP_NVIDIA = re.compile(r'(?:(?<![a-z0-9])|(?<=rtx)|(?<=gtx))(1650|1660|2060|30[5-9]0|40[6-9]0|50[5-9]0)'
+                          r'(?:\s*(ti\s*super|ti|super))?(?![a-z0-9])(?!\s*mhz)')
+_CHIP_AMD = re.compile(r'(?:(?<![a-z0-9])|(?<=rx))(6[4-9][05]0|7[6-9]00|90[67]0)'
+                       r'(?:\s*(xtx|xt|gre))?(?![a-z0-9])(?!\s*mhz)')
+_CHIP_INTEL = re.compile(r'(?<![a-z0-9])arc\s*([ab][3-7][578]0)(?![a-z0-9])')
+_DA_NVIDIA = re.compile(r'(?<![a-z0-9])(rtx|gtx|geforce|nvidia)')
+_DA_AMD = re.compile(r'(?<![a-z0-9])(rx|radeon)')
+# "Ryzen 5 7600" é processador, e "Ryzen 5 8600G com Radeon" é vídeo integrado.
+_PROCESSADOR = re.compile(r'\b(ryzen|processador|cpu)\b')
+_PLACA_DE_VIDEO = re.compile(r'\bplaca\s+(de\s+v[ií]deo|gr[aá]fica)\b')
+# Computador inteiro: só conta se vier antes de "placa de vídeo" ("Placa de
+# Vídeo RTX 5060 para PC Gamer" é placa).
+_SISTEMA = re.compile(r'\b(notebook|laptop|ultrabook|computador|desktop|all[\s-]*in[\s-]*one|pc|console)\b')
+# Conjunto, acessório ou outra peça que cita a placa ("suporte a Ray Tracing" passa).
+_OUTRO_ITEM = re.compile(r'\b(kit|combo|cabo|riser|backplate|water\s*block|waterblock|bracket|adaptador'
+                         r'|extensor|fonte|gabinete|placa[\s-]+m[ãa]e)\b|\bsuporte\b(?!\s+(a|à|ao)\b)')
+_MEMORIA = re.compile(r'(?<![\d.,])(\d{1,2})\s*(?:gb|g|gigas?)(?![a-z0-9])')
+_MEMORIAS_VALIDAS = {2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32}
+_GRAFIA = {'rtx': 'RTX', 'gtx': 'GTX', 'rx': 'RX', 'arc': 'Arc', 'ti': 'Ti', 'super': 'Super',
+           'xt': 'XT', 'xtx': 'XTX', 'gre': 'GRE'}
+
+
+def _nome_do_chip(chip: str) -> str:
+    return ' '.join(_GRAFIA.get(parte, parte.upper()) for parte in chip.split())
+
+
+def modelo_do_texto(texto: str) -> Optional[str]:
+    """'RTX 5060', 'RTX 5060 Ti 16GB', 'RX 9060 XT 16GB'... quando o texto
+    (título e descrição do post) é de UMA placa de vídeo avulsa de um chip da
+    MEMORIAS_GPU. None para notebook, PC, kit, acessório, dois chips, chip
+    desconhecido ou memória que o texto não deixa saber."""
+    texto = _limpar(texto or '')
+    sistema = _SISTEMA.search(texto)
+    placa = _PLACA_DE_VIDEO.search(texto)
+    if _OUTRO_ITEM.search(texto) or (sistema and not (placa and placa.start() < sistema.start())):
+        return None
+    chips = set()
+    if _DA_NVIDIA.search(texto):
+        for m in _CHIP_NVIDIA.finditer(texto):
+            familia = 'gtx' if m.group(1).startswith('16') else 'rtx'
+            chips.add(' '.join([familia, m.group(1)] + (m.group(2) or '').split()))
+    if _DA_AMD.search(texto) and not _PROCESSADOR.search(texto):
+        chips.update(' '.join(['rx', m.group(1)] + (m.group(2) or '').split()) for m in _CHIP_AMD.finditer(texto))
+    chips.update('arc ' + m.group(1) for m in _CHIP_INTEL.finditer(texto))
+    if len(chips) != 1:
+        return None
+    chip = chips.pop()
+    memorias = MEMORIAS_GPU.get(chip)
+    if not memorias:
+        return None
+    citadas = {int(gb) for gb in _MEMORIA.findall(texto)} & _MEMORIAS_VALIDAS
+    if len(memorias) == 1:
+        # Memória citada que não é a do chip: título trocado ou outro produto.
+        return _nome_do_chip(chip) if not citadas or memorias[0] in citadas else None
+    certas = citadas & set(memorias)
+    return f'{_nome_do_chip(chip)} {certas.pop()}GB' if len(certas) == 1 else None
+
+
+def _texto_antes_do_preco(texto: str, preco: Preco) -> str:
+    """Título e descrição do post: as linhas antes da do preço (dali para
+    baixo vêm cupom, link e comentários que podem citar outros produtos)."""
+    linhas = _linhas_do_post(texto)
+    for i, linha in enumerate(linhas):
+        if linha.strip() == preco.linha:
+            return '\n'.join(linhas[:i])
+    return titulo_do_post(texto) or ''
+
+
+# ============================================================
 # DATAS E FORMATAÇÃO
 # ============================================================
 def dia_e_mes_brt(momento: Optional[datetime] = None):
@@ -354,9 +473,11 @@ class Avaliacao:
     menor_desde: Optional[str] = None   # mês desde cujo início este é o menor preço
     registrado: bool = False
     ja_comentado: bool = False          # produto já comentado hoje por um preço igual ou menor
+    modelo: Optional[str] = None        # referências da média do modelo (o anúncio não tinha histórico)
 
 
-def classificar(chave: str, centavos: int, mes_atual: str, agregados: dict) -> Avaliacao:
+def classificar(chave: str, centavos: int, mes_atual: str, agregados: dict,
+                min_promocoes: int = MIN_PROMOCOES) -> Avaliacao:
     """Função pura. `agregados`: mes → (n, soma, minimo, maximo), com o estado de
     ANTES desta oferta."""
     mes_passado = mes_anterior(mes_atual)
@@ -366,7 +487,7 @@ def classificar(chave: str, centavos: int, mes_atual: str, agregados: dict) -> A
         if not agregado:
             continue
         n, soma, minimo, maximo = agregado
-        if n < MIN_PROMOCOES or (minimo > 0 and maximo / minimo > DISPERSAO_MAXIMA):
+        if n < min_promocoes or (minimo > 0 and maximo / minimo > DISPERSAO_MAXIMA):
             continue
         media = soma / n
         referencias.append(Referencia(mes, media, n, math.floor((media - centavos) * 100 / media)))
@@ -414,19 +535,23 @@ def texto_comentario(avaliacao: Optional[Avaliacao]) -> Optional[str]:
     else:
         linhas = ['✅ <b>Bom momento pra comprar!</b>']
     linhas.append(f'💰 Agora: {formatar_reais(avaliacao.centavos)}')
+    # Pela média do modelo: "da média das RTX 5060", "Menor preço de RTX 5060".
+    das = f' das {avaliacao.modelo}' if avaliacao.modelo else ''
+    de = f' de {avaliacao.modelo}' if avaliacao.modelo else ''
     for ref in avaliacao.referencias:
         nome = nome_do_mes(ref.mes) + (' até aqui' if ref.mes == avaliacao.mes_atual else '')
         detalhe = f'({formatar_reais(round(ref.media / 100) * 100)} em {ref.n} promoções)'
         if ref.pct >= LIMIAR_BOM:
-            linhas.append(f'📉 {ref.pct}% abaixo da média de {nome} {detalhe}')
+            linhas.append(f'📉 {ref.pct}% abaixo da média{das} de {nome} {detalhe}')
         else:
-            linhas.append(f'➖ Em linha com a média de {nome} {detalhe}')
+            linhas.append(f'➖ Em linha com a média{das} de {nome} {detalhe}')
     if avaliacao.menor_desde == mes_anterior(avaliacao.mes_atual):
-        linhas.append(f'🏆 Menor preço desde o início de {nome_do_mes(avaliacao.menor_desde)}.')
+        linhas.append(f'🏆 Menor preço{de} desde o início de {nome_do_mes(avaliacao.menor_desde)}.')
     elif avaliacao.menor_desde == avaliacao.mes_atual:
-        linhas.append(f'🏆 Menor preço de {nome_do_mes(avaliacao.mes_atual)} até aqui.')
+        linhas.append(f'🏆 Menor preço{de} de {nome_do_mes(avaliacao.mes_atual)} até aqui.')
     linhas.append('')
-    linhas.append(f'<i>{OBSERVACAO}</i>')
+    observacao = OBSERVACAO_MODELO.format(modelo=avaliacao.modelo) if avaliacao.modelo else OBSERVACAO
+    linhas.append(f'<i>{observacao}</i>')
     return '\n'.join(linhas)
 
 
@@ -449,7 +574,8 @@ CREATE TABLE IF NOT EXISTS produtos (
     ultimo_dia         TEXT,
     ultimo_centavos    INTEGER,
     comentado_dia      TEXT,       -- 1 comentário por produto por dia...
-    comentado_centavos INTEGER     -- ...a não ser que o preço caia mais
+    comentado_centavos INTEGER,    -- ...a não ser que o preço caia mais
+    modelo             TEXT        -- modelo_do_texto(): junta os anúncios do mesmo item
 ) WITHOUT ROWID;
 """
 _bancos_prontos = set()
@@ -464,9 +590,59 @@ def _conectar(caminho: Optional[str] = None) -> sqlite3.Connection:
     con = sqlite3.connect(caminho, timeout=5, isolation_level=None)
     if caminho not in _bancos_prontos:
         con.executescript(_DDL)
+        _migrar(con)
         with _trava:
             _bancos_prontos.add(caminho)
     return con
+
+
+def _migrar(con: sqlite3.Connection):
+    """Banco de antes da média do modelo ganha a coluna `modelo`, e cada
+    produto tem o modelo (re)calculado pelo título guardado sempre que
+    VERSAO_MODELOS sobe. Assim o histórico que já existe vale na hora."""
+    if con.execute('PRAGMA user_version').fetchone()[0] >= VERSAO_MODELOS:
+        return
+    con.execute('BEGIN IMMEDIATE')
+    try:
+        # Outra thread ou o importador pode ter migrado enquanto esperávamos a trava.
+        if con.execute('PRAGMA user_version').fetchone()[0] < VERSAO_MODELOS:
+            if 'modelo' not in {coluna[1] for coluna in con.execute('PRAGMA table_info(produtos)')}:
+                con.execute('ALTER TABLE produtos ADD COLUMN modelo TEXT')
+            con.execute('CREATE INDEX IF NOT EXISTS produtos_por_modelo ON produtos (modelo) '
+                        'WHERE modelo IS NOT NULL')
+            con.executemany('UPDATE produtos SET modelo = ? WHERE chave = ?', [
+                (modelo_do_texto(titulo), chave)
+                for chave, titulo in con.execute('SELECT chave, titulo FROM produtos').fetchall()])
+            con.execute(f'PRAGMA user_version = {int(VERSAO_MODELOS)}')
+        con.execute('COMMIT')
+    except BaseException:
+        con.execute('ROLLBACK')
+        raise
+
+
+def agregar_modelo(linhas) -> dict:
+    """Junta os agregados mensais dos anúncios de um modelo, linhas (mes, n,
+    soma, minimo, maximo), no formato do classificar(): mes → (n, soma,
+    minimo, maximo). O anúncio com algum preço fora da FAIXA_MODELO em volta da
+    mediana dos anúncios fica de fora do mês."""
+    por_mes = {}
+    for mes, n, soma, minimo, maximo in linhas:
+        por_mes.setdefault(mes, []).append((n, soma, minimo, maximo))
+    agregados = {}
+    for mes, anuncios in por_mes.items():
+        mediana = statistics.median(soma / n for n, soma, _, _ in anuncios)
+        dentro = [a for a in anuncios if mediana / FAIXA_MODELO <= a[2] and a[3] <= mediana * FAIXA_MODELO]
+        if dentro:
+            agregados[mes] = (sum(a[0] for a in dentro), sum(a[1] for a in dentro),
+                              min(a[2] for a in dentro), max(a[3] for a in dentro))
+    return agregados
+
+
+def _agregados_do_modelo(con: sqlite3.Connection, modelo: str, mes: str) -> dict:
+    return agregar_modelo(con.execute(
+        'SELECT m.mes, m.n, m.soma, m.minimo, m.maximo FROM produtos p '
+        'JOIN precos_mes m ON m.chave = p.chave WHERE p.modelo = ? AND m.mes IN (?, ?)',
+        (modelo, mes_anterior(mes), mes)).fetchall())
 
 
 def _podar(con: sqlite3.Connection, caminho: str, dia: str, mes: str):
@@ -482,10 +658,11 @@ def _podar(con: sqlite3.Connection, caminho: str, dia: str, mes: str):
 
 def registrar_e_avaliar(chave: str, centavos: int, momento: Optional[datetime] = None,
                         titulo: Optional[str] = None, caminho: Optional[str] = None,
-                        marcar_comentario: bool = True) -> Avaliacao:
+                        marcar_comentario: bool = True, modelo: Optional[str] = None) -> Avaliacao:
     """Avalia a oferta com o histórico de ANTES dela e registra o preço no
-    agregado do mês, tudo numa transação. `marcar_comentario=False` (importação
-    do histórico) não conta a oferta como "já comentada hoje"."""
+    agregado do mês, tudo numa transação. Sem histórico do anúncio, usa a
+    média do `modelo` (se houver). `marcar_comentario=False` (importação do
+    histórico) não conta a oferta como "já comentada hoje"."""
     caminho = caminho or CAMINHO_BANCO
     dia, mes = dia_e_mes_brt(momento)
     with closing(_conectar(caminho)) as con:
@@ -497,6 +674,11 @@ def registrar_e_avaliar(chave: str, centavos: int, momento: Optional[datetime] =
                     (chave, mes_anterior(mes), mes))
             }
             avaliacao = classificar(chave, centavos, mes, agregados)
+            if avaliacao.status == 'sem_historico' and modelo:
+                pelo_modelo = classificar(chave, centavos, mes, _agregados_do_modelo(con, modelo, mes),
+                                          MIN_PROMOCOES_MODELO)
+                if pelo_modelo.status != 'sem_historico':
+                    avaliacao = replace(pelo_modelo, modelo=modelo)
             produto = con.execute(
                 'SELECT ultimo_dia, ultimo_centavos, comentado_dia, comentado_centavos FROM produtos '
                 'WHERE chave = ?', (chave,)).fetchone() or (None, None, None, None)
@@ -524,10 +706,11 @@ def registrar_e_avaliar(chave: str, centavos: int, momento: Optional[datetime] =
                     'minimo = MIN(minimo, excluded.minimo), maximo = MAX(maximo, excluded.maximo)',
                     (chave, mes, centavos, centavos, centavos))
             con.execute(
-                'INSERT INTO produtos (chave, titulo, ultimo_dia, ultimo_centavos) VALUES (?, ?, ?, ?) '
+                'INSERT INTO produtos (chave, titulo, modelo, ultimo_dia, ultimo_centavos) VALUES (?, ?, ?, ?, ?) '
                 'ON CONFLICT (chave) DO UPDATE SET titulo = COALESCE(excluded.titulo, titulo), '
+                'modelo = COALESCE(excluded.modelo, modelo), '
                 'ultimo_dia = excluded.ultimo_dia, ultimo_centavos = excluded.ultimo_centavos',
-                (chave, titulo, dia, centavos))
+                (chave, titulo, modelo, dia, centavos))
             con.execute('COMMIT')
         except BaseException:
             con.execute('ROLLBACK')
@@ -557,7 +740,7 @@ def avaliar_oferta(texto: str, urls: Iterable[str], momento: Optional[datetime] 
         # faria qualquer post com o preço do Pix parecer "abaixo da média".
         return None, 'so_cartao'
     avaliacao = registrar_e_avaliar(chave, preco.centavos, momento, titulo_do_post(texto), caminho,
-                                    marcar_comentario)
+                                    marcar_comentario, modelo=modelo_do_texto(_texto_antes_do_preco(texto, preco)))
     return avaliacao, 'ok'
 
 
@@ -566,14 +749,17 @@ def descrever(avaliacao: Avaliacao) -> str:
     refs = ', '.join(
         f'{nome_do_mes(r.mes)} {formatar_reais(round(r.media))} n={r.n} ({r.pct:+d}%)'
         for r in avaliacao.referencias) or 'sem referência'
+    pelo_modelo = f' pela média das {avaliacao.modelo}' if avaliacao.modelo else ''
     extra = ' (já comentado hoje)' if avaliacao.ja_comentado else ''
-    return f'{avaliacao.chave} {formatar_reais(avaliacao.centavos)} → {avaliacao.status}{extra} [{refs}]'
+    return (f'{avaliacao.chave} {formatar_reais(avaliacao.centavos)} → '
+            f'{avaliacao.status}{pelo_modelo}{extra} [{refs}]')
 
 
 # ============================================================
 # CLI — consultas rápidas na VPS
 #   python3 historico_precos.py resumo
 #   python3 historico_precos.py produto meli:p:MLB52170796
+#   python3 historico_precos.py modelo "RTX 5060"     (sem nome: lista os modelos)
 # ============================================================
 def _resumo(caminho: Optional[str]):
     with closing(_conectar(caminho)) as con:
@@ -588,7 +774,7 @@ def _resumo(caminho: Optional[str]):
 
 def _produto(chave: str, caminho: Optional[str]):
     with closing(_conectar(caminho)) as con:
-        info = con.execute('SELECT titulo, ultimo_dia, ultimo_centavos FROM produtos WHERE chave = ?',
+        info = con.execute('SELECT titulo, ultimo_dia, ultimo_centavos, modelo FROM produtos WHERE chave = ?',
                            (chave,)).fetchone()
         meses = con.execute('SELECT mes, n, soma, minimo, maximo FROM precos_mes WHERE chave = ? ORDER BY mes',
                             (chave,)).fetchall()
@@ -596,8 +782,29 @@ def _produto(chave: str, caminho: Optional[str]):
         print(f'{chave}: sem histórico')
         return
     if info:
-        print(f'{chave}: {info[0] or "(sem título)"} — último: {formatar_reais(info[2])} em {info[1]}')
+        modelo = f' — modelo {info[3]}' if info[3] else ''
+        print(f'{chave}: {info[0] or "(sem título)"} — último: {formatar_reais(info[2])} em {info[1]}{modelo}')
     for mes, n, soma, minimo, maximo in meses:
+        print(f'  {mes}: média {formatar_reais(soma / n)} em {n} promoções '
+              f'(menor {formatar_reais(minimo)}, maior {formatar_reais(maximo)})')
+
+
+def _modelo(nome: Optional[str], caminho: Optional[str]):
+    with closing(_conectar(caminho)) as con:
+        if not nome:
+            modelos = con.execute('SELECT modelo, COUNT(*) FROM produtos WHERE modelo IS NOT NULL '
+                                  'GROUP BY modelo ORDER BY COUNT(*) DESC, modelo').fetchall()
+            print('\n'.join(f'{modelo:<20} {anuncios:>4} anúncios' for modelo, anuncios in modelos)
+                  or 'nenhum modelo no histórico')
+            return
+        anuncios = con.execute('SELECT COUNT(*) FROM produtos WHERE modelo = ?', (nome,)).fetchone()[0]
+        linhas = con.execute('SELECT m.mes, m.n, m.soma, m.minimo, m.maximo FROM produtos p '
+                             'JOIN precos_mes m ON m.chave = p.chave WHERE p.modelo = ?', (nome,)).fetchall()
+    if not anuncios:
+        print(f'{nome}: sem histórico')
+        return
+    print(f'{nome}: {anuncios} anúncios')
+    for mes, (n, soma, minimo, maximo) in sorted(agregar_modelo(linhas).items()):
         print(f'  {mes}: média {formatar_reais(soma / n)} em {n} promoções '
               f'(menor {formatar_reais(minimo)}, maior {formatar_reais(maximo)})')
 
@@ -609,11 +816,15 @@ def main(argv=None):
     sub.add_parser('resumo', help='produtos e promoções por mês e loja')
     produto = sub.add_parser('produto', help='histórico mensal de um produto')
     produto.add_argument('chave')
+    modelo = sub.add_parser('modelo', help='média mensal de um modelo (sem nome: lista os modelos)')
+    modelo.add_argument('nome', nargs='?')
     args = parser.parse_args(argv)
     if args.comando == 'resumo':
         _resumo(args.banco)
-    else:
+    elif args.comando == 'produto':
         _produto(args.chave, args.banco)
+    else:
+        _modelo(args.nome, args.banco)
 
 
 if __name__ == '__main__':

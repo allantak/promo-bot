@@ -4,9 +4,12 @@ formatos reais dos canais, identidade do produto, comparação com a média do
 mês passado/atual e o banco agregado. Sem rede; o banco vai para tmp_path
 (fixture historico_isolado do conftest).
 """
+import sqlite3
 import subprocess
 import sys
 import threading
+from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -304,6 +307,18 @@ class TestTextoComentario:
         assert hp.texto_comentario(av) is None
         assert hp.texto_comentario(None) is None
 
+    def test_pela_media_do_modelo(self):
+        av = replace(hp.classificar("meli:u:MLBU1", 243999, "2026-10",
+                                    {"2026-10": _agregado(2609, 2645, 2617, 2663, 2559, 2699)},
+                                    hp.MIN_PROMOCOES_MODELO), modelo="RTX 5060")
+        texto = hp.texto_comentario(av)
+        assert texto.startswith("✅ <b>Bom momento pra comprar!</b>")
+        assert "📉 7% abaixo da média das RTX 5060 de outubro até aqui (R$ 2.632 em 6 promoções)" in texto
+        assert "🏆 Menor preço de RTX 5060 de outubro até aqui." in texto
+        assert hp.OBSERVACAO_MODELO.format(modelo="RTX 5060") in texto
+        assert hp.OBSERVACAO not in texto
+        assert "pela média das RTX 5060" in hp.descrever(av)
+
 
 # ----------------------------------------------------------------------
 # Banco agregado
@@ -393,6 +408,170 @@ class TestRegistrarEAvaliar:
         assert chamadas == []
         hp.avaliar_oferta("Mouse Gamer\n💵 R$ 99", [], resolver=resolver)
         assert chamadas == [1]
+
+
+# ----------------------------------------------------------------------
+# Modelo: a mesma placa em vários anúncios e lojas
+# ----------------------------------------------------------------------
+class TestModeloDoTexto:
+    @pytest.mark.parametrize("texto, modelo", [
+        # Títulos reais dos canais (set–out/2026)
+        ("Placa De Vídeo Msi Rtx 5060 8g Shadow 2x Oc Gddr7 128 Bits", "RTX 5060"),
+        ("Placa De Vídeo Nvidia Msi Geforce 5060 8GB shadow 2x oc Edition", "RTX 5060"),
+        ("RTX 5060 Placa de Vídeo INNO3D GeForce RTX5060 Twin X2 8GB GDDR7 128-bit", "RTX 5060"),
+        ("ZOTAC GAMING GEFORCE RTX 5060 8GB 128BITS GDDR7 TWIN EDGE OC ZT-B50600H-10M", "RTX 5060"),
+        ("Placa de Video Palit GeForce RTX 5060 8GB INFINITY 2 OC GDDR7 128bits - NE75060V19P1-GB2063L", "RTX 5060"),
+        ("Placa De Vídeo Gigabyte Rtx 5060 Eagle Max Oc\n- 8GB Gddr7", "RTX 5060"),
+        ("NVIDIA RTX 5060 PALIT INFINITY", "RTX 5060"),
+        ("Placa de Vídeo GeForce Gigabyte 5060, 8GB GDDR7, 128 bits.", "RTX 5060"),
+        ("Placa de Vídeo RTX 5060 8GB para PC Gamer", "RTX 5060"),
+        ("Placa De Vídeo Pcyes Rtx 5060 Ti 16gb Gddr7 128 Bits Preta", "RTX 5060 Ti 16GB"),
+        ("Placa De Video Asus RTX 5060 Ti Dual O8G Nvidia Geforce 8GB Gddr7 Dlss Ray Tracing", "RTX 5060 Ti 8GB"),
+        ("Placa de Video GeForce NVIDIA PALIT RTX5060TI 8GB DUAL GDDR7 NE7506T019P1-GB2062D", "RTX 5060 Ti 8GB"),
+        ("Placa de Vídeo GALAX - GeForce RTX 3080 Serious Gaming, 10GB, LHR, RGB", "RTX 3080 10GB"),
+        ("Placa De Vídeo Superframe Nvidia Geforce Rtx 3070 Epic 8 Gb", "RTX 3070"),
+        ("Placa de Vídeo ASRock Radeon RX 7600 8GB Challenger OC GDDR6 HDMI 2.1", "RX 7600"),
+        ("Placa de Vídeo Sapphire Pulse AMD Radeon RX 9060 XT 16GB GDDR6", "RX 9060 XT 16GB"),
+        ("Placa de Vídeo XFX Speedster Radeon RX 7900 XTX 24GB", "RX 7900 XTX"),
+        ("Placa de Vídeo Intel Arc B580 Challenger 12GB OC", "Arc B580"),
+        ("Placa de Vídeo Gainward GeForce GTX 1660 Super Ghost 6GB", "GTX 1660 Super"),
+    ])
+    def test_placas(self, texto, modelo):
+        assert hp.modelo_do_texto(texto) == modelo
+
+    @pytest.mark.parametrize("texto", [
+        "Notebook ASUS TUF Gaming F16 Intel i5 NVIDIA RTX™ 5060 16GB 512GB SSD Windows 11",
+        "Notebook Gamer ROG Strix G16\n- 16GB\n- 512GB\n- RTX5060",
+        "PC Gamer Completo Ryzen 5 5600 RTX 5060 8GB 16GB RAM",
+        "Kit Upgrade Ryzen 5 5600 + Placa de Vídeo RTX 5060",
+        "Suporte para Placa de Vídeo RTX 5090",
+        "Processador AMD Ryzen 5 7600, 3.8GHz, AM5",               # 7600 de processador, não RX
+        "Processador AMD Ryzen 5 8600G com Radeon 760M",
+        "Placa de Vídeo RTX 5060 Ti",                             # 8 ou 16 GB? o texto não diz
+        "Placa de Vídeo RTX 5060 Ti 8GB ou 16GB",
+        "VERSÂO TI COM O VALOR DA 5060 NORMAL\nPlaca De Video Pny Rtx5060ti 8GB",   # dois chips
+        "Placa de Vídeo Gigabyte GV-N5060AERO OC-8GD",            # só o código do fabricante
+        "Placa de Vídeo RTX 5070 Super 18GB",                     # chip fora da tabela
+        "Placa de Vídeo RTX 5060 16GB",                           # a RTX 5060 só tem 8 GB
+        "Monitor Gamer LG UltraGear 27 180Hz",
+        "",
+    ])
+    def test_sem_modelo(self, texto):
+        assert hp.modelo_do_texto(texto) is None
+
+
+class TestAgregarModelo:
+    def test_soma_os_anuncios_de_cada_mes(self):
+        linhas = [("2026-10", 2, 500000, 240000, 260000), ("2026-10", 1, 255000, 255000, 255000),
+                  ("2026-09", 3, 690000, 220000, 240000)]
+        assert hp.agregar_modelo(linhas) == {"2026-10": (3, 755000, 240000, 260000),
+                                             "2026-09": (3, 690000, 220000, 240000)}
+
+    def test_anuncio_com_preco_absurdo_fica_de_fora(self):
+        # Casos reais com o nome da placa: "R$ 97.899,00 NO PIX" e "R$ 234" (parcela).
+        linhas = [("2026-10", 2, 500000, 240000, 260000), ("2026-10", 1, 255000, 255000, 255000),
+                  ("2026-10", 1, 9789900, 9789900, 9789900), ("2026-10", 1, 23400, 23400, 23400),
+                  ("2026-10", 2, 266500, 23400, 243100)]
+        assert hp.agregar_modelo(linhas) == {"2026-10": (3, 755000, 240000, 260000)}
+
+
+# Promoções de RTX 5060 de outros anúncios em outubro: média R$ 2.632.
+OUTRAS_5060 = [
+    ("amz:B0GQ17JZFJ", 2609, 8), ("kabum:1", 2645, 9), ("meli:p:MLB52175612", 2617, 10),
+    ("meli:p:MLB50869989", 2663, 11), ("shopee:1.2", 2559, 12), ("kabum:2", 2699, 14),
+]
+POST_MSI = ("Placa De Vídeo Msi Rtx 5060 8g Shadow 2x Oc Gddr7 128 Bits\n\nPOR: R$2.439,99\n"
+            "Cupom: RESGATEALLSITE + Cupom da loja\n\nhttps://meli.la/17jqwgq\n\n(anúncio)")
+URL_MSI_UP = ("https://www.mercadolivre.com.br/placa-de-video-msi-rtx-5060-8g-shadow-2x-oc-gddr7-128-bits"
+              "/up/MLBU4899388815")
+
+
+def _semear_5060(promocoes=OUTRAS_5060, caminho=None):
+    for chave, reais, dia in promocoes:
+        hp.registrar_e_avaliar(chave, reais * 100, _utc(2026, 10, dia), titulo="Placa de Vídeo RTX 5060",
+                               caminho=caminho, modelo="RTX 5060")
+
+
+class TestMediaDoModelo:
+    def test_anuncio_novo_compara_com_a_media_do_modelo(self):
+        # Caso real (15/10, 01:23): a MSI saiu num /up/ do ML que nunca tinha
+        # aparecido e o bot ficou calado ("sem_historico").
+        _semear_5060()
+        av, motivo = hp.avaliar_oferta(POST_MSI, [URL_MSI_UP], _utc(2026, 10, 15, 4))
+        assert (motivo, av.chave, av.modelo, av.status) == ("ok", "meli:u:MLBU4899388815", "RTX 5060", "bom")
+        assert av.menor_desde == "2026-10"
+        comentario = hp.texto_comentario(av)
+        assert "📉 7% abaixo da média das RTX 5060 de outubro até aqui (R$ 2.632 em 6 promoções)" in comentario
+        assert "🏆 Menor preço de RTX 5060 de outubro até aqui." in comentario
+
+    def test_o_modelo_vem_do_titulo_e_nao_do_que_vem_depois_do_preco(self):
+        texto = ("⚠️PERGUNTA\n\nPlaca De Vídeo Superframe Nvidia Geforce Rtx 3070 Epic 8 Gb\n\nPOR: 2196\n"
+                 "CUPOM: VALEDESCONTO\n\nhttps://meli.la/2zYj93V\n\nA 3070 tem desempenho parecido com a 5060")
+        url = "https://www.mercadolivre.com.br/placa-de-video-superframe-rtx-3070-epic-8gb/p/MLB123"
+        assert hp.avaliar_oferta(texto, [url], _utc(2026, 10, 2))[1] == "ok"
+        with closing(sqlite3.connect(hp.CAMINHO_BANCO)) as con:
+            assert con.execute("SELECT modelo FROM produtos WHERE chave = 'meli:p:MLB123'").fetchone() == ("RTX 3070",)
+
+    def test_anuncio_com_historico_proprio_ignora_o_modelo(self):
+        _semear_5060()
+        _semear_5060([("meli:u:MLBU4899388815", 2400, 3), ("meli:u:MLBU4899388815", 2400, 4)])
+        av, _ = hp.avaliar_oferta(POST_MSI, [URL_MSI_UP], _utc(2026, 10, 15, 4))
+        assert (av.modelo, av.status) == (None, "na_media")       # 2% acima da própria média
+
+    def test_modelo_com_poucas_promocoes_nao_vira_referencia(self):
+        _semear_5060(OUTRAS_5060[:hp.MIN_PROMOCOES_MODELO - 1])
+        av, _ = hp.avaliar_oferta(POST_MSI, [URL_MSI_UP], _utc(2026, 10, 15, 4))
+        assert (av.modelo, av.status) == (None, "sem_historico")
+        assert hp.texto_comentario(av) is None
+
+    def test_preco_absurdo_de_anuncio_novo_nao_entra_no_historico(self):
+        _semear_5060()
+        digitado_errado = hp.registrar_e_avaliar("shopee:9.9", 9789900, _utc(2026, 10, 15), modelo="RTX 5060")
+        acessorio = hp.registrar_e_avaliar("shopee:8.8", 3000, _utc(2026, 10, 15), modelo="RTX 5060")
+        assert (digitado_errado.status, digitado_errado.registrado) == ("acima", False)
+        assert (acessorio.status, acessorio.registrado) == ("suspeito", False)
+        assert hp.texto_comentario(acessorio) is None
+
+    def test_banco_antigo_ganha_o_modelo_pelo_titulo_e_ja_serve(self, tmp_path):
+        # Banco da versão anterior (sem a coluna modelo), com histórico de verdade.
+        caminho = str(tmp_path / "antigo.db")
+        with closing(sqlite3.connect(caminho)) as con:
+            con.executescript("""
+                CREATE TABLE precos_mes (chave TEXT NOT NULL, mes TEXT NOT NULL, n INTEGER NOT NULL,
+                    soma INTEGER NOT NULL, minimo INTEGER NOT NULL, maximo INTEGER NOT NULL,
+                    PRIMARY KEY (chave, mes)) WITHOUT ROWID;
+                CREATE TABLE produtos (chave TEXT PRIMARY KEY, titulo TEXT, ultimo_dia TEXT,
+                    ultimo_centavos INTEGER, comentado_dia TEXT, comentado_centavos INTEGER) WITHOUT ROWID;
+            """)
+            con.executemany("INSERT INTO produtos (chave, titulo) VALUES (?, ?)", [
+                ("meli:p:MLB51032833", "Placa De Vídeo Nvidia Msi Geforce 5060 8GB shadow 2x oc Edition"),
+                ("amz:B0GQ17JZFJ", "ZOTAC GAMING GEFORCE RTX 5060 8GB 128BITS GDDR7 TWIN EDGE OC"),
+                ("kabum:1048336", "Processador AMD Ryzen 5 7600X3D"),
+            ])
+            con.executemany("INSERT INTO precos_mes VALUES (?, '2026-10', ?, ?, ?, ?)", [
+                ("meli:p:MLB51032833", 4, 1072600, 255900, 299900),
+                ("amz:B0GQ17JZFJ", 3, 783100, 255900, 265900),
+                ("kabum:1048336", 2, 320000, 160000, 160000),
+            ])
+            con.commit()
+
+        av, _ = hp.avaliar_oferta(POST_MSI, [URL_MSI_UP], _utc(2026, 10, 15, 4), caminho=caminho)
+
+        assert (av.modelo, av.status) == ("RTX 5060", "bom")    # média R$ 2.651 de 7 promoções: 7% abaixo
+        with closing(sqlite3.connect(caminho)) as con:
+            assert dict(con.execute("SELECT chave, modelo FROM produtos")) == {
+                "meli:p:MLB51032833": "RTX 5060", "amz:B0GQ17JZFJ": "RTX 5060", "kabum:1048336": None,
+                "meli:u:MLBU4899388815": "RTX 5060"}
+            assert con.execute("PRAGMA user_version").fetchone()[0] == hp.VERSAO_MODELOS
+
+    def test_cli_do_modelo(self, capsys):
+        _semear_5060()
+        hp.main(["modelo"])
+        assert "RTX 5060" in capsys.readouterr().out
+        hp.main(["modelo", "RTX 5060"])
+        saida = capsys.readouterr().out
+        assert "RTX 5060: 6 anúncios" in saida
+        assert "2026-10: média R$ 2.632 em 6 promoções (menor R$ 2.559, maior R$ 2.699)" in saida
 
 
 def test_modulo_nao_puxa_telethon_nem_observable():
