@@ -15,6 +15,9 @@ leitura de ≤ 2 linhas e um UPSERT pela chave primária (VPS de 1 GB).
 Anúncio sem histórico próprio (um ID novo de uma placa que já apareceu com
 outro) é comparado com a média do MODELO: as placas do mesmo chip, de
 qualquer marca e loja (ver modelo_do_texto).
+
+O mesmo banco guarda a última FOTO que o canal postou de cada produto (o
+file_id da Bot API), para o post que chega sem foto (ver guardar_foto).
 """
 from __future__ import annotations
 
@@ -577,6 +580,11 @@ CREATE TABLE IF NOT EXISTS produtos (
     comentado_centavos INTEGER,    -- ...a não ser que o preço caia mais
     modelo             TEXT        -- modelo_do_texto(): junta os anúncios do mesmo item
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS fotos (
+    chave   TEXT PRIMARY KEY,
+    file_id TEXT NOT NULL,         -- foto do nosso post no canal (Bot API), já com a marca d'água
+    dia     TEXT NOT NULL          -- última vez que saiu no canal (horário de Brasília)
+) WITHOUT ROWID;
 """
 _bancos_prontos = set()
 _ultima_poda = {}
@@ -654,6 +662,7 @@ def _podar(con: sqlite3.Connection, caminho: str, dia: str, mes: str):
     con.execute('DELETE FROM precos_mes WHERE mes < ?', (deslocar_mes(mes, -RETENCAO_MESES),))
     limite = (datetime.strptime(dia, '%Y-%m-%d') - timedelta(days=RETENCAO_PRODUTOS_DIAS)).strftime('%Y-%m-%d')
     con.execute('DELETE FROM produtos WHERE ultimo_dia < ?', (limite,))
+    con.execute('DELETE FROM fotos WHERE dia < ?', (limite,))
 
 
 def registrar_e_avaliar(chave: str, centavos: int, momento: Optional[datetime] = None,
@@ -744,6 +753,30 @@ def avaliar_oferta(texto: str, urls: Iterable[str], momento: Optional[datetime] 
     return avaliacao, 'ok'
 
 
+# ============================================================
+# FOTO DO PRODUTO — para o post que chega sem foto
+# ============================================================
+# O canal de origem às vezes posta só o texto (19/11/2026: o OQMDV mandou 10
+# placas da KaBuM seguidas sem foto, e as nossas saíram sem também). Cada foto
+# que sai no nosso canal fica guardada aqui pelo file_id da Bot API, que já tem
+# a marca d'água e é reenviado sem novo upload; o próximo post do mesmo produto
+# que chegar sem foto usa essa. Vale a última que saiu.
+def guardar_foto(chave: str, file_id: str, momento: Optional[datetime] = None,
+                 caminho: Optional[str] = None):
+    dia, _ = dia_e_mes_brt(momento)
+    with closing(_conectar(caminho)) as con:
+        con.execute('INSERT INTO fotos (chave, file_id, dia) VALUES (?, ?, ?) '
+                    'ON CONFLICT (chave) DO UPDATE SET file_id = excluded.file_id, dia = excluded.dia',
+                    (chave, file_id, dia))
+
+
+def foto_do_produto(chave: str, caminho: Optional[str] = None) -> Optional[str]:
+    """file_id da última foto que o canal postou do produto (None se nunca saiu com foto)."""
+    with closing(_conectar(caminho)) as con:
+        linha = con.execute('SELECT file_id FROM fotos WHERE chave = ?', (chave,)).fetchone()
+    return linha[0] if linha else None
+
+
 def descrever(avaliacao: Avaliacao) -> str:
     """Resumo de uma linha para o log."""
     refs = ', '.join(
@@ -767,7 +800,8 @@ def _resumo(caminho: Optional[str]):
             "SELECT mes, substr(chave, 1, instr(chave, ':') - 1) AS loja, COUNT(*), SUM(n) "
             "FROM precos_mes GROUP BY mes, loja ORDER BY mes, loja").fetchall()
         total = con.execute('SELECT COUNT(*) FROM produtos').fetchone()[0]
-    print(f'{total} produtos no histórico')
+        fotos = con.execute('SELECT COUNT(*) FROM fotos').fetchone()[0]
+    print(f'{total} produtos no histórico, {fotos} com foto guardada')
     for mes, loja, produtos, promocoes in linhas:
         print(f'{mes}  {loja:<7} {produtos:>5} produtos  {promocoes:>6} promoções')
 
@@ -778,7 +812,8 @@ def _produto(chave: str, caminho: Optional[str]):
                            (chave,)).fetchone()
         meses = con.execute('SELECT mes, n, soma, minimo, maximo FROM precos_mes WHERE chave = ? ORDER BY mes',
                             (chave,)).fetchall()
-    if not info and not meses:
+        foto = con.execute('SELECT dia FROM fotos WHERE chave = ?', (chave,)).fetchone()
+    if not info and not meses and not foto:
         print(f'{chave}: sem histórico')
         return
     if info:
@@ -787,6 +822,7 @@ def _produto(chave: str, caminho: Optional[str]):
     for mes, n, soma, minimo, maximo in meses:
         print(f'  {mes}: média {formatar_reais(soma / n)} em {n} promoções '
               f'(menor {formatar_reais(minimo)}, maior {formatar_reais(maximo)})')
+    print(f'  foto guardada: saiu no canal em {foto[0]}' if foto else '  sem foto guardada')
 
 
 def _modelo(nome: Optional[str], caminho: Optional[str]):

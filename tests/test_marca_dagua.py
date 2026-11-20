@@ -97,6 +97,20 @@ class TestAplicarMarcaDagua:
         finally:
             os.remove(base)
 
+    def test_foto_pequena_e_ampliada_antes_da_marca(self):
+        # A foto da prévia de link da KaBuM tem 200 px: sem ampliar, o selo
+        # sairia com 38 px e borrado.
+        base = _criar_foto_base(tamanho=(200, 150))
+        try:
+            saida = observable.aplicar_marca_dagua(base)
+            try:
+                with Image.open(saida) as img:
+                    assert img.size == (observable.LADO_MINIMO_IMAGEM, observable.LADO_MINIMO_IMAGEM * 3 // 4)
+            finally:
+                os.remove(saida)
+        finally:
+            os.remove(base)
+
     def test_fallback_quando_marca_ausente(self, monkeypatch):
         monkeypatch.setattr(
             observable, "CAMINHO_MARCA_DAGUA",

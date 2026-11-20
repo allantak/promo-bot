@@ -411,6 +411,33 @@ class TestRegistrarEAvaliar:
 
 
 # ----------------------------------------------------------------------
+# Foto do produto: a última que saiu no canal, para o post que chega sem foto
+# ----------------------------------------------------------------------
+class TestFotoDoProduto:
+    def test_guarda_e_devolve_a_ultima(self):
+        assert hp.foto_do_produto("kabum:1") is None
+        hp.guardar_foto("kabum:1", "PRIMEIRA")
+        hp.guardar_foto("kabum:1", "ULTIMA")
+        assert hp.foto_do_produto("kabum:1") == "ULTIMA"
+        assert hp.foto_do_produto("kabum:2") is None
+
+    def test_poda_esquece_a_foto_de_produto_sumido(self, tmp_path):
+        caminho = str(tmp_path / "fotos.db")
+        hp.guardar_foto("kabum:1", "VELHA", _utc(2025, 1, 10), caminho=caminho)
+        hp.guardar_foto("kabum:2", "RECENTE", _utc(2026, 10, 1), caminho=caminho)
+        hp.registrar_e_avaliar("kabum:3", 100000, _utc(2026, 10, 10), caminho=caminho)   # a poda roda aqui
+        assert hp.foto_do_produto("kabum:1", caminho) is None
+        assert hp.foto_do_produto("kabum:2", caminho) == "RECENTE"
+
+    def test_cli_mostra_se_tem_foto(self, capsys):
+        hp.guardar_foto("kabum:1", "X", _utc(2026, 11, 19))
+        hp.main(["produto", "kabum:1"])
+        assert "foto guardada: saiu no canal em 2026-11-19" in capsys.readouterr().out
+        hp.main(["resumo"])
+        assert "1 com foto guardada" in capsys.readouterr().out
+
+
+# ----------------------------------------------------------------------
 # Modelo: a mesma placa em vários anúncios e lojas
 # ----------------------------------------------------------------------
 class TestModeloDoTexto:

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 from PIL import Image
-from telethon import errors
+from telethon import errors, functions, types
 
 import historico_precos
 import observable
@@ -258,7 +258,7 @@ class TestProcessarPromocao:
         asyncio.run(observable.processar_promocao(_evento(self.TEXTO)))
 
         assert len(publicados) == 1
-        texto, caminho_imagem = publicados[0]
+        texto, caminho_imagem = publicados[0][:2]
         assert "meli.la/MEU" in texto
         assert caminho_imagem is None
         assert observable.ja_foi_enviado(self.TEXTO) is True   # marcado como enviado
@@ -313,6 +313,174 @@ class TestProcessarPromocao:
         foto = SimpleNamespace(mime_type="image/jpeg", size=150_000)
         asyncio.run(observable.processar_promocao(_evento(self.TEXTO, arquivo=foto)))
         assert publicados and publicados[0][1] is None   # desistiu da imagem e postou o texto
+
+
+# ----------------------------------------------------------------------
+# Post de origem sem foto. Caso real (19/11/2026): o OQMDV mandou 10 placas
+# da KaBuM seguidas só com texto, e as nossas saíram sem foto também.
+# ----------------------------------------------------------------------
+URL_PLACA = ("https://www.kabum.com.br/produto/1078270/placa-de-video-nvidia-gainward-rtx-5070-12gb-python-iii"
+             "-gddr7-192bits-gainward-ne75070019k9-gb2050t")
+TEXTO_PLACA = ("Placa de Vídeo Nvidia Gainward RTX 5070 12GB PYTHON III GDDR7 192BITS GAINWARD NE75070019K9-GB2050T\n"
+               "💰 POR: R$ 5029\n🎟️ Cupom: PEGAOZ4F4D1NH0\n🛒 https://tidd.ly/4BVAty9\nANUNCIO")
+CHAVE_PLACA = "kabum:1078270"
+
+
+def _foto_telethon():
+    return types.Photo(id=1, access_hash=2, file_reference=b"", date=datetime.now(timezone.utc),
+                       sizes=[types.PhotoSize(type="x", w=200, h=200, size=9000)], dc_id=1)
+
+
+def _pagina_com_foto(foto):
+    return types.WebPage(id=1, url=URL_PLACA, display_url="kabum.com.br", hash=0, photo=foto)
+
+
+def _previa(pagina):
+    """Resposta do messages.getWebPagePreview."""
+    return types.messages.WebPagePreview(media=types.MessageMediaWebPage(webpage=pagina), chats=[], users=[])
+
+
+class _TelethonDePrevias:
+    """Faz o papel do client do Telethon: responde, em ordem, aos pedidos de
+    prévia de link e "baixa" a foto para `baixada`."""
+
+    def __init__(self, respostas=(), baixada=None):
+        self.respostas = list(respostas)
+        self.pedidos = []
+        self.downloads = []
+        self.baixada = baixada
+
+    async def __call__(self, pedido):
+        self.pedidos.append(pedido)
+        resposta = self.respostas.pop(0)
+        if isinstance(resposta, Exception):
+            raise resposta
+        return resposta
+
+    async def download_media(self, midia, file=None):
+        self.downloads.append(midia)
+        return self.baixada
+
+
+class TestPostSemFoto:
+    def _processar(self, monkeypatch, telethon, texto=TEXTO_PLACA,
+                   urls=(URL_PLACA + "?awc=17729_1795130706&utm_source=AWIN",)):
+        def converter(t):
+            for url in urls:
+                observable._anotar_url_produto(url)          # como o converter_link_kabum faz
+            return t.replace("tidd.ly/4BVAty9", "tidd.ly/4sZG5mU"), True
+        monkeypatch.setattr(observable, "substituir_links_no_texto", converter)
+        monkeypatch.setattr(observable, "client", telethon)
+        publicados = []
+        monkeypatch.setattr(observable, "publicar", lambda *a: publicados.append(a) or 555)
+        asyncio.run(observable.processar_promocao(_evento(texto)))
+        return publicados
+
+    def test_usa_a_ultima_foto_do_produto_no_canal(self, monkeypatch):
+        historico_precos.guardar_foto(CHAVE_PLACA, "FOTO_DO_CANAL")
+        telethon = _TelethonDePrevias()
+
+        texto, caminho_imagem, chave, foto_salva = self._processar(monkeypatch, telethon)[0]
+
+        assert "tidd.ly/4sZG5mU" in texto
+        assert (caminho_imagem, chave, foto_salva) == (None, CHAVE_PLACA, "FOTO_DO_CANAL")
+        assert telethon.pedidos == []          # nem pede a prévia: a foto do canal é maior
+
+    def test_sem_foto_guardada_usa_a_previa_da_pagina_da_kabum(self, monkeypatch, tmp_path):
+        foto = _foto_telethon()
+        baixada = str(tmp_path / "previa.jpg")
+        telethon = _TelethonDePrevias([_previa(_pagina_com_foto(foto))], baixada)
+
+        publicados = self._processar(monkeypatch, telethon)
+
+        pedido, = telethon.pedidos
+        assert isinstance(pedido, functions.messages.GetWebPagePreviewRequest)
+        assert pedido.message == URL_PLACA     # a página do produto, sem a query de afiliado
+        assert telethon.downloads == [foto]
+        assert publicados[0][1:] == (baixada, CHAVE_PLACA, None)
+
+    def test_previa_ainda_sendo_montada_espera_e_pede_de_novo(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(observable, "ESPERAS_PREVIA", (0, 0))
+        baixada = str(tmp_path / "previa.jpg")
+        telethon = _TelethonDePrevias([
+            _previa(types.WebPagePending(id=1, date=None)),
+            types.messages.WebPage(webpage=_pagina_com_foto(_foto_telethon()), chats=[], users=[]),
+        ], baixada)
+
+        publicados = self._processar(monkeypatch, telethon)
+
+        assert [type(p).__name__ for p in telethon.pedidos] == ["GetWebPagePreviewRequest", "GetWebPageRequest"]
+        assert publicados[0][1] == baixada
+
+    @pytest.mark.parametrize("resposta", [
+        _previa(types.WebPageEmpty(id=1)),     # o Telegram não conseguiu montar a prévia
+        RuntimeError("caiu a conexão"),
+    ])
+    def test_sem_previa_sai_so_com_texto(self, monkeypatch, resposta):
+        telethon = _TelethonDePrevias([resposta])
+        publicados = self._processar(monkeypatch, telethon)
+        assert publicados[0][1:] == (None, CHAVE_PLACA, None)
+        assert telethon.downloads == []
+
+    def test_floodwait_suspende_as_previas(self, monkeypatch):
+        telethon = _TelethonDePrevias([errors.FloodWaitError(request=None, capture=600)])
+        monkeypatch.setattr(observable, "client", telethon)
+        assert asyncio.run(observable.baixar_foto_da_previa(URL_PLACA)) is None
+        assert asyncio.run(observable.baixar_foto_da_previa(URL_PLACA)) is None
+        assert len(telethon.pedidos) == 1      # o 2º pedido nem foi ao Telegram
+
+    def test_loja_fora_da_lista_nao_pede_previa(self, monkeypatch):
+        # A foto guardada vale para qualquer loja; a prévia, só onde foi testada
+        # (em outras ela pode trazer o logo da loja em vez do produto).
+        url = "https://www.mercadolivre.com.br/placa-de-video-rtx-5070-gainward-python-iii/p/MLB51032833"
+        telethon = _TelethonDePrevias()
+        publicados = self._processar(monkeypatch, telethon, texto="Placa de Vídeo RTX 5070 Gainward Python III\n"
+                                     "💰 R$ 5029\nhttps://meli.la/abc", urls=(url,))
+        assert publicados[0][1:] == (None, "meli:p:MLB51032833", None)
+        assert telethon.pedidos == []
+
+    def test_post_com_dois_produtos_nao_busca_foto(self, monkeypatch):
+        historico_precos.guardar_foto(CHAVE_PLACA, "FOTO_DO_CANAL")
+        telethon = _TelethonDePrevias()
+        outra = "https://www.kabum.com.br/produto/1078276/placa-de-video-nvidia-msi-rtx-5070-12gb-ventus-2x"
+        publicados = self._processar(monkeypatch, telethon, urls=(URL_PLACA, outra))
+        assert publicados[0][1:] == (None, None, None)       # não dá para saber de qual seria a foto
+        assert telethon.pedidos == []
+
+    def test_foto_que_saiu_no_canal_vale_para_o_proximo_post_sem_foto(self, monkeypatch, fake_response, tmp_path):
+        """Fluxo inteiro com o publicar de verdade: o 1º post veio com foto; o 2º,
+        do mesmo produto, só com texto, e sai com a foto do 1º, sem novo upload."""
+        chamadas = []
+
+        def post(url, data=None, files=None, **kw):
+            chamadas.append((url.rsplit("/", 1)[1], dict(data or {}), files))
+            return fake_response(status_code=200, json_data={"ok": True, "result": {
+                "message_id": 41211, "photo": [{"file_id": "PEQUENA", "width": 90, "height": 90},
+                                               {"file_id": "GRANDE", "width": 1280, "height": 1280}]}})
+        monkeypatch.setattr(observable.requests, "post", post)
+        monkeypatch.setattr(observable, "aplicar_marca_dagua", lambda caminho: caminho)
+
+        def converter(t):
+            observable._anotar_url_produto(URL_PLACA)
+            return t, True
+        monkeypatch.setattr(observable, "substituir_links_no_texto", converter)
+        foto_da_origem = tmp_path / "origem.jpg"
+        foto_da_origem.write_bytes(b"jpg")
+
+        async def baixar(msg, file=None):
+            return str(foto_da_origem)
+        monkeypatch.setattr(observable.client, "download_media", baixar)
+
+        foto = SimpleNamespace(mime_type="image/jpeg", size=150_000)
+        asyncio.run(observable.processar_promocao(_evento(TEXTO_PLACA, arquivo=foto, msg_id=1)))
+        observable.cache_links.clear()         # horas depois: já saiu do dedup
+        asyncio.run(observable.processar_promocao(_evento(TEXTO_PLACA, msg_id=2)))
+
+        assert [metodo for metodo, _, _ in chamadas] == ["sendPhoto", "sendPhoto"]
+        assert chamadas[0][2] is not None                    # 1º: upload da foto
+        _, dados, arquivos = chamadas[1]
+        assert dados["photo"] == "GRANDE" and arquivos is None
+        assert historico_precos.foto_do_produto(CHAVE_PLACA) == "GRANDE"
 
 
 class TestEscutarPromocoes:

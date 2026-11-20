@@ -1,4 +1,4 @@
-from telethon import TelegramClient, events, errors
+from telethon import TelegramClient, events, errors, functions, types
 from cachetools import TTLCache
 import asyncio
 import html
@@ -91,6 +91,19 @@ SAIDA_SESSAO_INVALIDA = 78
 # precisaria de centenas de MB para aplicar a marca d'água numa VPS de 1 GB.
 TAMANHO_MAXIMO_IMAGEM = 10 * 1024 * 1024
 LADO_MAXIMO_IMAGEM = 2560
+# Foto menor que isso é ampliada antes da marca d'água, senão o selo sai
+# borrado (a foto da prévia de link da KaBuM tem 200 px).
+LADO_MINIMO_IMAGEM = 640
+
+# --- Foto para o post que o canal de origem mandou só com texto ---
+# 1º a última foto que o nosso canal postou do mesmo produto (historico_precos);
+# 2º a foto da prévia de link que o Telegram gera para a página do produto. A
+# KaBuM barra o IP da VPS (403 do firewall), mas o robô de prévias do Telegram
+# passa e traz a foto. Só nas lojas testadas: em outras a prévia pode trazer o
+# logo da loja em vez do produto.
+DOMINIOS_FOTO_PELA_PREVIA = ['kabum.com.br']
+PRAZO_PREVIA = 15
+ESPERAS_PREVIA = (2, 3)       # o Telegram ainda está montando a prévia (WebPagePending)
 
 # --- Termômetro de preço (historico_precos.py): reação + comentário no post ---
 # quando a oferta está abaixo da média das promoções do produto.
@@ -1016,10 +1029,32 @@ def avaliar_preco_do_post(texto: str, texto_convertido: str, urls_resolvidas: li
     return avaliacao
 
 
+def produto_do_post(texto: str, texto_convertido: str, urls_resolvidas: list, avaliacao=None):
+    """(chave, página) do produto do post, para achar uma foto quando o post
+    de origem vem sem. A chave é a do histórico de preços, que exige um produto
+    só e o nome do link batendo com o texto (lista e cupom ficam de fora). A
+    página só vem das lojas de DOMINIOS_FOTO_PELA_PREVIA. Nunca levanta exceção."""
+    try:
+        urls = urls_resolvidas + padrao_link.findall(texto) + padrao_link.findall(texto_convertido)
+        chave = avaliacao.chave if avaliacao else historico_precos.chave_unica(urls, texto)[0]
+        if not chave:
+            return None, None
+        pagina = next((u for u in urls if _link_e_de(u, DOMINIOS_FOTO_PELA_PREVIA)
+                       and historico_precos.chave_do_produto(u) == chave), None)
+        if pagina:
+            # Sem a query (parâmetros de afiliado de terceiros): a página é a mesma.
+            pagina = urlunparse(urlparse(pagina)._replace(query='', fragment=''))
+        return chave, pagina
+    except Exception as e:
+        print(f"[foto] Erro ao identificar o produto do post: {e!r}")
+        return None, None
+
+
 def converter_e_avaliar(texto: str, momento: datetime = None):
     """Converte os links e, na mesma thread, avalia o preço contra o histórico
     do produto. Registra mesmo se a conversão falhar (ex.: cookie do ML
-    vencido): a promoção existiu. A avaliação nunca derruba o post."""
+    vencido): a promoção existiu. A avaliação nunca derruba o post.
+    Devolve também o produto do post (ver produto_do_post)."""
     _coleta.urls = []
     try:
         texto_convertido, houve_conversao = substituir_links_no_texto(texto)
@@ -1033,7 +1068,8 @@ def converter_e_avaliar(texto: str, momento: datetime = None):
             avaliacao = avaliar_preco_do_post(texto, texto_convertido, urls_resolvidas, momento)
         except Exception as e:
             print(f"[preço] Erro ao avaliar o preço (o post segue normal): {e!r}")
-    return texto_convertido, houve_conversao, avaliacao
+    produto = produto_do_post(texto, texto_convertido, urls_resolvidas, avaliacao)
+    return texto_convertido, houve_conversao, avaliacao, produto
 
 
 # ============================================================
@@ -1161,7 +1197,7 @@ async def processar_promocao(event):
         # A conversão faz várias requisições HTTP síncronas: roda numa thread para
         # não congelar o event loop do Telethon (pings e recebimento de updates).
         # Na mesma thread, o preço é comparado com o histórico do produto.
-        texto_convertido, houve_conversao, avaliacao = await asyncio.to_thread(
+        texto_convertido, houve_conversao, avaliacao, (chave_produto, pagina_produto) = await asyncio.to_thread(
             converter_e_avaliar, texto_da_mensagem, event.message.date
         )
 
@@ -1173,42 +1209,114 @@ async def processar_promocao(event):
         print(f"\n[!] Oferta de: {nome_do_canal_origem}")
         print(f"Texto final:\n{texto_convertido}\n")
 
-        # Só baixa imagem (foto, prévia de link com foto, imagem enviada como
-        # arquivo). Vídeo/GIF não viram foto e só gastariam banda e disco.
-        caminho_imagem = None
-        arquivo = event.message.file
-        if (arquivo and (arquivo.mime_type or '').startswith('image/')
-                and (arquivo.size or 0) <= TAMANHO_MAXIMO_IMAGEM):
-            destino = tempfile.mktemp(suffix='.jpg')
-            try:
-                caminho_imagem = await asyncio.wait_for(
-                    client.download_media(event.message, file=destino),
-                    timeout=60
-                )
-            except Exception as e:
-                print(f"[X] Erro ao baixar imagem (o post sai só com texto): {e!r}")
-                try:
-                    os.remove(destino)
-                except OSError:
-                    pass
+        caminho_imagem = await baixar_foto_do_post(event.message)
+        foto_salva = None
+        if not caminho_imagem and chave_produto:
+            foto_salva, caminho_imagem = await foto_para_post_sem_foto(chave_produto, pagina_produto)
 
-        message_id = await asyncio.to_thread(publicar, texto_convertido, caminho_imagem)
+        message_id = await asyncio.to_thread(publicar, texto_convertido, caminho_imagem, chave_produto, foto_salva)
         await tratar_comentario_de_preco(avaliacao, message_id)
 
     except Exception as e:
         print(f"[X] Erro geral: {e}")
 
 
-def publicar(texto: str, caminho_imagem: str = None):
-    """Aplica a marca d'água e posta no canal. Devolve o id do post no canal
-    (ou None se não deu para confirmar). Bloqueante (Pillow + HTTP): chamar
-    fora do event loop, via asyncio.to_thread."""
+async def _baixar_imagem(midia, descricao: str):
+    """Baixa a mídia (mensagem ou foto do Telethon) para um .jpg temporário.
+    Devolve o caminho, ou None sem deixar arquivo pela metade para trás."""
+    destino = tempfile.mktemp(suffix='.jpg')
+    try:
+        return await asyncio.wait_for(client.download_media(midia, file=destino), timeout=60)
+    except Exception as e:
+        print(f"[X] Erro ao baixar a {descricao}: {e!r}")
+        try:
+            os.remove(destino)
+        except OSError:
+            pass
+        return None
+
+
+async def baixar_foto_do_post(mensagem):
+    """Baixa a imagem do post de origem: foto, prévia de link com foto ou imagem
+    enviada como arquivo. Vídeo/GIF não viram foto e só gastariam banda e disco."""
+    arquivo = mensagem.file
+    if not (arquivo and (arquivo.mime_type or '').startswith('image/')
+            and (arquivo.size or 0) <= TAMANHO_MAXIMO_IMAGEM):
+        return None
+    return await _baixar_imagem(mensagem, "imagem do post")
+
+
+_previas_suspensas_ate = 0.0
+
+
+async def baixar_foto_da_previa(url: str):
+    """Pede ao Telegram a prévia de link da página (o mesmo que o app faz ao
+    colar um link) e baixa a foto dela. Devolve o caminho ou None. A conta é a
+    mesma que escuta os canais: um FloodWait suspende as prévias até passar."""
+    global _previas_suspensas_ate
+    if time.monotonic() < _previas_suspensas_ate:
+        print("[foto] Prévias suspensas por FloodWait — sem foto da prévia.")
+        return None
+    try:
+        resposta = await asyncio.wait_for(
+            client(functions.messages.GetWebPagePreviewRequest(message=url)), timeout=PRAZO_PREVIA)
+        pagina = getattr(resposta.media, 'webpage', None)
+        for espera in ESPERAS_PREVIA:
+            if not isinstance(pagina, types.WebPagePending):
+                break
+            await asyncio.sleep(espera)
+            resposta = await asyncio.wait_for(
+                client(functions.messages.GetWebPageRequest(url=url, hash=0)), timeout=PRAZO_PREVIA)
+            pagina = resposta.webpage
+    except errors.FloodWaitError as e:
+        _previas_suspensas_ate = time.monotonic() + e.seconds
+        print(f"[foto] FloodWait de {e.seconds} s ao pedir a prévia — prévias suspensas até lá.")
+        return None
+    except Exception as e:
+        print(f"[foto] Erro ao pedir a prévia de {url}: {e!r}")
+        return None
+    if not isinstance(pagina, types.WebPage) or not isinstance(pagina.photo, types.Photo):
+        print(f"[foto] A prévia de {url} veio sem foto ({type(pagina).__name__}).")
+        return None
+    return await _baixar_imagem(pagina.photo, "foto da prévia")
+
+
+async def foto_para_post_sem_foto(chave_produto: str, pagina_produto: str = None):
+    """Foto para o post que chegou sem foto (ex.: 19/11/2026, o OQMDV mandou 10
+    placas da KaBuM seguidas só com texto). Devolve (file_id, None) com a última
+    foto que o canal postou do produto, (None, caminho) com a foto da prévia de
+    link da página, ou (None, None): aí o post sai só com texto, como antes."""
+    try:
+        file_id = await asyncio.to_thread(historico_precos.foto_do_produto, chave_produto)
+    except Exception as e:
+        print(f"[foto] Erro ao ler a foto guardada de {chave_produto}: {e!r}")
+        file_id = None
+    if file_id:
+        print(f"[foto] Post de origem sem foto — usando a última foto do {chave_produto} no canal")
+        return file_id, None
+    if pagina_produto:
+        caminho = await baixar_foto_da_previa(pagina_produto)
+        if caminho:
+            print(f"[foto] Post de origem sem foto — usando a foto da prévia de link do {chave_produto}")
+            return None, caminho
+    print(f"[foto] Post de origem sem foto e nenhuma foto do {chave_produto} achada — sai só com texto")
+    return None, None
+
+
+def publicar(texto: str, caminho_imagem: str = None, chave_produto: str = None, foto_salva: str = None):
+    """Aplica a marca d'água e posta no canal. Sem arquivo, reenvia `foto_salva`
+    (file_id de um post nosso do mesmo produto: já tem a marca). A foto que sai
+    fica guardada sob `chave_produto`. Devolve o id do post no canal (ou None
+    se não deu para confirmar). Bloqueante (Pillow + HTTP): chamar fora do
+    event loop, via asyncio.to_thread."""
     if not caminho_imagem:
+        if foto_salva:
+            return enviar_para_meu_bot_com_imagem(texto, chave_produto=chave_produto, foto_salva=foto_salva)
         return enviar_para_meu_bot(texto)
 
     caminho_final = aplicar_marca_dagua(caminho_imagem)
     try:
-        return enviar_para_meu_bot_com_imagem(texto, caminho_final)
+        return enviar_para_meu_bot_com_imagem(texto, caminho_final, chave_produto)
     finally:
         for p in {caminho_imagem, caminho_final}:
             try:
@@ -1228,6 +1336,10 @@ def aplicar_marca_dagua(caminho_imagem_base: str) -> str:
             base_img.draft('RGB', (LADO_MAXIMO_IMAGEM, LADO_MAXIMO_IMAGEM))
             base = base_img.convert("RGBA")
         base.thumbnail((LADO_MAXIMO_IMAGEM, LADO_MAXIMO_IMAGEM))
+        if max(base.size) < LADO_MINIMO_IMAGEM:
+            escala = LADO_MINIMO_IMAGEM / max(base.size)
+            base = base.resize((max(1, round(base.width * escala)), max(1, round(base.height * escala))),
+                               Image.LANCZOS)
         with Image.open(CAMINHO_MARCA_DAGUA) as marca_img:
             marca = marca_img.convert("RGBA")
 
@@ -1261,27 +1373,45 @@ def _message_id(resposta):
         return None
 
 
-def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str):
+def _guardar_foto(chave_produto: str, resposta):
+    """Guarda o file_id da foto que acabou de sair no canal, para o próximo
+    post do mesmo produto que chegar sem foto. Nunca levanta exceção."""
+    if not chave_produto:
+        return
+    try:
+        maior = max(resposta.json()['result']['photo'], key=lambda f: f.get('width', 0) * f.get('height', 0))
+        historico_precos.guardar_foto(chave_produto, maior['file_id'])
+    except Exception as e:
+        print(f"[foto] Não consegui guardar a foto do {chave_produto}: {e!r}")
+
+
+def enviar_para_meu_bot_com_imagem(texto: str, caminho_imagem: str = None, chave_produto: str = None,
+                                   foto_salva: str = None):
+    """sendPhoto com o arquivo `caminho_imagem` ou, sem ele, com o file_id
+    `foto_salva` (sem novo upload). A foto publicada fica guardada sob
+    `chave_produto`. Devolve o id do post (ou None)."""
     url_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    payload = {
+        "chat_id": MEU_CANAL_ID,
+        "caption": texto,
+        "parse_mode": "HTML"
+    }
 
     try:
-        with open(caminho_imagem, 'rb') as foto:
-            payload = {
-                "chat_id": MEU_CANAL_ID,
-                "caption": texto,
-                "parse_mode": "HTML"
-            }
-            files = {"photo": foto}
+        # (10, 60): o 1º valor limita a conexão E cada trecho do upload da
+        # foto; o 2º, a espera pela resposta depois do upload.
+        if caminho_imagem:
+            with open(caminho_imagem, 'rb') as foto:
+                resposta = requests.post(url_api, data=payload, files={"photo": foto}, timeout=(10, 60))
+        else:
+            resposta = requests.post(url_api, data={**payload, "photo": foto_salva}, timeout=(10, 60))
 
-            # (10, 60): o 1º valor limita a conexão E cada trecho do upload da
-            # foto; o 2º, a espera pela resposta depois do upload.
-            resposta = requests.post(url_api, data=payload, files=files, timeout=(10, 60))
-
-            if resposta.status_code == 200:
-                print("[✓] Postado com imagem no canal!")
-                return _message_id(resposta)
-            print(f"[X] Erro ao postar com imagem: {resposta.text}")
-            return enviar_para_meu_bot(texto)
+        if resposta.status_code == 200:
+            print("[✓] Postado com imagem no canal!")
+            _guardar_foto(chave_produto, resposta)
+            return _message_id(resposta)
+        print(f"[X] Erro ao postar com imagem: {resposta.text}")
+        return enviar_para_meu_bot(texto)
 
     except requests.ReadTimeout as e:
         # Sem fallback: o Telegram pode ter publicado a foto mesmo sem responder
